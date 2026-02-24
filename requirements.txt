@@ -1,0 +1,86 @@
+# ===============================
+# Core Framework
+# ===============================
+fastapi==0.115.0
+starlette>=0.37.2,<0.39.0
+uvicorn[standard]==0.32.1
+
+
+# ===============================
+# Database - MongoDB
+# ===============================
+motor==3.6.0
+pymongo>=4.9,<4.10
+
+
+# ===============================
+# Cache - Redis
+# ===============================
+redis==5.2.0
+orjson==3.10.12
+
+
+# ===============================
+# Authentication & Security
+# ===============================
+PyJWT==2.10.1
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+cryptography==44.0.0
+
+
+# ===============================
+# WebSocket Support
+# ===============================
+python-socketio==5.12.0
+python-engineio>=4.11.0,<5.0.0
+websockets==14.1
+
+
+# ===============================
+# Utilities
+# ===============================
+python-dotenv==1.0.1
+python-multipart==0.0.20
+email-validator==2.2.0
+pydantic==2.10.4
+pydantic-core==2.27.2
+pydantic-settings==2.7.1
+
+
+# ===============================
+# HTTP & Async
+# ===============================
+httpx==0.28.1
+aiofiles==24.1.0
+anyio==4.8.0
+h11==0.14.0
+
+
+# ===============================
+# Data Processing
+# ===============================
+python-dateutil==2.9.0.post0
+
+
+# ===============================
+# Monitoring & Logging
+# ===============================
+prometheus-client==0.21.0
+
+
+# ===============================
+# Production Server
+# ===============================
+gunicorn>=21.0.0
+uvloop>=0.19.0; sys_platform != "win32"
+
+
+# ===============================
+# Development & Testing
+# ===============================
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0
+black==24.10.0
