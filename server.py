@@ -733,6 +733,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Admin seeding error: {e}")
 
+    # ── Redis connection ──────────────────────────────────────────────
+    global redis_client
+    if HAS_REDIS_LIB:
+        _redis_url = os.getenv("REDIS_URL", "")
+        if _redis_url:
+            try:
+                redis_client = aioredis.from_url(
+                    _redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=5,
+                    retry_on_timeout=True,
+                )
+                await redis_client.ping()
+                logger.info("✓ Redis connected")
+            except Exception as e:
+                logger.warning(f"⚠ Redis unavailable (falling back to in-memory): {e}")
+                redis_client = None
+        else:
+            logger.info("⚠ No REDIS_URL set — using in-memory cache only")
+    else:
+        logger.info("⚠ redis library not installed — using in-memory cache only")
+
     manager = ConnectionManager()
     logger.info("✓ Prashnify API ready (PRODUCTION v2)")
 
@@ -767,7 +789,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True if _cors_origins != ["*"] else False,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -1893,6 +1915,10 @@ async def handle_start_quiz(quiz_code: str, mgr: ConnectionManager):
 
         total = len(questions)
         mgr.set_total_questions(quiz_code, total)
+
+        # Immediately mark state as 'starting' so sync_state tells
+        # reconnecting / late-joining players to navigate to quiz page
+        mgr.set_state(quiz_code, "starting")
 
         # Broadcast countdown start
         await mgr.broadcast(quiz_code, {
