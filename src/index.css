@@ -1,0 +1,139 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka+One&family=Fredoka:wght@300..700&family=Nunito:wght@400;600;700;800;900&family=Outfit:wght@100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Global Mobile Responsiveness ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Prevent text from causing overflow */
+p, h1, h2, h3, span, div {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Remove tap highlight on mobile */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Ensure inputs don't zoom on focus on iOS */
+input, select, textarea {
+  font-size: 16px !important;
+}
+
+/* Better touch targets */
+button {
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+body {
+    margin: 0;
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+    font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, monospace;
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 0 0% 3.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 3.9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 3.9%;
+        --primary: 0 0% 9%;
+        --primary-foreground: 0 0% 98%;
+        --secondary: 0 0% 96.1%;
+        --secondary-foreground: 0 0% 9%;
+        --muted: 0 0% 96.1%;
+        --muted-foreground: 0 0% 45.1%;
+        --accent: 0 0% 96.1%;
+        --accent-foreground: 0 0% 9%;
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 89.8%;
+        --input: 0 0% 89.8%;
+        --ring: 0 0% 3.9%;
+        --radius: 0.5rem;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+.admin-theme {
+    background: #F8F9FC;
+    color: #1A1025;
+}
+
+.quiz-theme {
+    background: #0F0518;
+    color: #FFFFFF;
+    min-height: 100vh;
+}
+
+.glass-card {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.neon-border {
+    border: 1px solid rgba(157, 0, 255, 0.3);
+    box-shadow: 0 0 15px rgba(157, 0, 255, 0.1);
+}
+
+.button-3d {
+    border-bottom: 4px solid rgba(0, 0, 0, 0.2);
+    transition: all 0.15s ease;
+}
+
+.button-3d:active {
+    border-bottom-width: 0;
+    transform: translateY(4px);
+}
+
+.glow-primary {
+    box-shadow: 0 0 20px rgba(255, 107, 0, 0.4);
+}
+
+.glow-accent {
+    box-shadow: 0 0 20px rgba(0, 255, 148, 0.4);
+}
+
+@keyframes pulse-glow {
+    0%, 100% {
+        box-shadow: 0 0 15px rgba(157, 0, 255, 0.3);
+    }
+    50% {
+        box-shadow: 0 0 30px rgba(157, 0, 255, 0.6);
+    }
+}
+
+.pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+}
