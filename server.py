@@ -30,15 +30,21 @@ import jwt as pyjwt
 # Fast JSON serialization
 try:
     import orjson
+    HAS_ORJSON = True
     def fast_dumps(obj):
         return orjson.dumps(obj).decode("utf-8")
+    def fast_loads(s):
+        return orjson.loads(s)
     print("✓ orjson enabled")
 except ImportError:
     import json
+    HAS_ORJSON = False
     def fast_dumps(obj):
         return json.dumps(obj, separators=(',', ':'))
+    def fast_loads(s):
+        return json.loads(s)
 
-import json  # still needed for json.loads
+import json  # still needed for json.loads in other places
 
 # Redis async client
 try:
@@ -76,7 +82,7 @@ class Config:
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     MAX_PARTICIPANTS = 1000
     WS_HEARTBEAT_SEC = 15
-    WS_TIMEOUT_SEC = 25
+    WS_TIMEOUT_SEC = 45
     CACHE_TTL_SEC = 30  # Cache quiz/question data
     LEADERBOARD_CACHE_TTL = 5  # Leaderboard cache (seconds)
     ALLOWED_ORIGINS = [
@@ -121,7 +127,7 @@ class QuizCache:
             try:
                 data = await redis_client.get(f"quiz:{code}")
                 if data:
-                    return orjson.loads(data) if 'orjson' in dir() else json.loads(data)
+                    return fast_loads(data)
             except Exception:
                 pass
         # Fallback to in-memory
@@ -144,7 +150,7 @@ class QuizCache:
             try:
                 data = await redis_client.get(f"questions:{code}")
                 if data:
-                    return orjson.loads(data) if 'orjson' in dir() else json.loads(data)
+                    return fast_loads(data)
             except Exception:
                 pass
         if code in self._mem_questions:
@@ -177,7 +183,7 @@ class QuizCache:
             try:
                 data = await redis_client.get(f"leaderboard:{code}")
                 if data:
-                    return orjson.loads(data) if 'orjson' in dir() else json.loads(data)
+                    return fast_loads(data)
             except Exception:
                 pass
         return None
@@ -1330,7 +1336,7 @@ async def update_quiz_status(code: str, status: str = Query(...), _admin: Dict =
             raise HTTPException(404, "Quiz not found")
 
         # Invalidate cache
-        quiz_cache.invalidate(code)
+        await quiz_cache.invalidate(code)
 
         if status == "ended" and manager:
             manager.set_state(code, QuizState.ENDED)
@@ -1369,7 +1375,7 @@ async def delete_quiz(code: str, _admin: Dict = Depends(verify_admin_token)):
             db.participants.delete_many({"quizCode": code}),
         )
 
-        quiz_cache.invalidate(code)
+        await quiz_cache.invalidate(code)
 
         logger.info(f"✓ Quiz deleted: {code}")
         return {"success": True, "message": "Quiz deleted"}
@@ -2362,6 +2368,6 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", 8000)),
         reload=True,
         log_level="info",
-        ws_ping_interval=config.WS_HEARTBEAT_SEC,
-        ws_ping_timeout=config.WS_TIMEOUT_SEC,
+        ws_ping_interval=20,
+        ws_ping_timeout=45,
     )
