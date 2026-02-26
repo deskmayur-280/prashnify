@@ -8,9 +8,9 @@ import confetti from 'canvas-confetti';
 import { Button } from '@/components/ui/button';
 import DicebearAvatar from '@/components/ui/avatar/DicebearAvatar';
 import { useSocket } from '../context/SocketContext';
+import { API_BASE_URL } from '../config';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const API = `${API_BASE_URL}/api`;
 
 const Leaderboard = () => {
   const { code } = useParams();

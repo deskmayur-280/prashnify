@@ -69,7 +69,8 @@ export const clearAvatarSeed = () => {
  * @returns {Promise<string>} Unique avatar seed
  */
 export const requestUniqueAvatar = async (quizCode, participantId) => {
-  const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+  const { API_BASE_URL } = await import('../config');
+  const BACKEND_URL = API_BASE_URL;
   
   try {
     const response = await fetch(`${BACKEND_URL}/api/avatar/unique`, {

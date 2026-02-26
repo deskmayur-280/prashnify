@@ -16,6 +16,7 @@ import './App.css';
 
 import { SocketProvider } from './context/SocketContext';
 import { initAudio } from './utils/sounds';
+import { API_BASE_URL } from './config';
 
 // Auth guard for admin routes — validates JWT against backend
 const AdminRoute = ({ children }) => {
@@ -27,7 +28,7 @@ const AdminRoute = ({ children }) => {
       setAuthStatus('unauthorized');
       return;
     }
-    const API = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000') + '/api';
+    const API = `${API_BASE_URL}/api`;
     fetch(`${API}/admin/verify-token`, {
       headers: { Authorization: `Bearer ${token}` },
     })

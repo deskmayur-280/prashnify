@@ -15,9 +15,9 @@ import DicebearAvatar from '@/components/ui/avatar/DicebearAvatar';
 import { saveAvatarSeed } from '@/utils/avatar';
 import { useSocket } from '../context/SocketContext';
 import { bgMusic } from '@/utils/bgMusic';
+import { API_BASE_URL } from '../config';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const API = `${API_BASE_URL}/api`;
 
 const QuizLobby = () => {
   const { code } = useParams();
@@ -153,7 +153,7 @@ const QuizLobby = () => {
   }, []);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!isConnected) return;
     
     const cleanupParticipantJoined = addListener('participant_joined', (data) => {
       setParticipants(prev => {
@@ -192,6 +192,7 @@ const QuizLobby = () => {
     // Auto-redirect if quiz is already in progress (late join or reconnect)
     const cleanupSyncState = addListener('sync_state', (data) => {
       if (data.quiz_state && data.quiz_state !== 'lobby') {
+        // Covers 'starting', 'question', 'answer_reveal', 'leaderboard', etc.
         navigate(`/quiz/${code}`);
       }
     });
@@ -238,7 +239,7 @@ const QuizLobby = () => {
       cleanupQuizEnded();
       cleanupKicked();
     };
-  }, [socket, addListener]);
+  }, [isConnected, addListener, navigate, code, isAdmin, participantId]);
 
   useEffect(() => {
     if (!participantId && !isAdmin) {
@@ -268,12 +269,12 @@ const QuizLobby = () => {
       return;
     }
 
-    if (socket) {
+    if (isConnected) {
       send({ type: 'quiz_starting' });
       // Navigate immediately — the WS broadcast will fire on the quiz page
       navigate(`/quiz/${code}`);
     } else {
-      toast.error('❌ Connection lost');
+      toast.error('❌ Connection lost. Please wait for reconnection.');
     }
   };
 

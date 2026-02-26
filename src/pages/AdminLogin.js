@@ -5,9 +5,9 @@ import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Lock, User, Zap, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { API_BASE_URL } from '../config';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const API = `${API_BASE_URL}/api`;
 
 const AdminLogin = () => {
   const navigate = useNavigate();

@@ -13,9 +13,9 @@ import DicebearAvatar from '@/components/ui/avatar/DicebearAvatar';
 import { useSocket } from '../context/SocketContext';
 import { sounds } from '@/utils/sounds';
 import { bgMusic } from '@/utils/bgMusic';
+import { API_BASE_URL } from '../config';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const API = `${API_BASE_URL}/api`;
 
 const AdminControl = () => {
   const { code } = useParams();
@@ -133,7 +133,7 @@ const AdminControl = () => {
   }, [code]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!isConnected) return;
 
     const off1 = addListener('participant_joined', (data) => {
       setParticipants(prev => {
@@ -219,17 +219,21 @@ const AdminControl = () => {
 
     return () => { off1(); off2(); off3(); off4(); off5(); off6(); off7(); off8(); off9(); off10(); off11(); off12(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket]);
+  }, [isConnected, addListener, navigate, code, startAdminTimer, stopTimer, currentQuestionIndex, totalQuestions]);
 
   const handleStartQuiz = useCallback(() => {
     if (participants.length === 0) {
       toast.error('⚠️ No participants yet!');
       return;
     }
+    if (!isConnected) {
+      toast.error('❌ Not connected. Please wait...');
+      return;
+    }
     send({ type: 'quiz_starting' });
     confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
     navigate(`/quiz/${code}`);
-  }, [participants.length, send, navigate, code]);
+  }, [participants.length, send, navigate, code, isConnected]);
 
   const handleEndQuiz = useCallback(async () => {
     try {
@@ -245,9 +249,9 @@ const AdminControl = () => {
   }, [code, navigate]);
 
   const handleKickPlayer = useCallback((participant) => {
-    if (!socket) return;
+    if (!isConnected) return;
     send({ type: 'kick_player', participantId: participant.id });
-  }, [socket, send]);
+  }, [isConnected, send]);
 
   if (loading) {
     return (

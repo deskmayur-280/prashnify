@@ -8,9 +8,9 @@ import { Check, X, BarChart3, Users, Zap, Star, Flame, Volume2, VolumeX, Sparkle
 import { useSocket } from '../context/SocketContext';
 import { sounds, setMuted, isMuted } from '@/utils/sounds';
 import { bgMusic } from '@/utils/bgMusic';
+import { API_BASE_URL } from '../config';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const API = `${API_BASE_URL}/api`;
 
 const ANSWER_COLORS = [
   { bg: '#E53E3E', hover: '#C53030', glow: 'rgba(229,62,62,0.3)' },
@@ -218,7 +218,7 @@ const QuizPlay = () => {
 
   // Reaction listener — always active
   useEffect(() => {
-    if (!socket) return;
+    if (!isConnected) return;
     const cleanup = addListener('reaction', (data) => {
       const id = `${Date.now()}-${Math.random()}`;
       const x = 10 + Math.random() * 70;
@@ -228,10 +228,10 @@ const QuizPlay = () => {
       }, 3500);
     });
     return cleanup;
-  }, [socket, addListener]);
+  }, [isConnected, addListener]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!isConnected) return;
 
     const off1 = addListener('answer_count', (d) => {
       setAnsweredCount(d.answeredCount ?? 0);
@@ -440,7 +440,7 @@ const QuizPlay = () => {
 
     return () => { off1(); off2(); off3(); off3b(); off3c(); off4(); off5(); off6(); off7(); off8(); off9(); off10(); off11(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket]);
+  }, [isConnected, addListener, code, navigate, isAdmin, participantId, startTimer, startTimerFrom, stopTimer, resetQuestionState]);
 
   // ─── Auto-submit on timeout ──────────────────────────────────────
   useEffect(() => {

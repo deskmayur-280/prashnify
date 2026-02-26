@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useRef, useState, useCallback, useEffect } from 'react';
+import { WS_BASE_URL } from '../config';
 
 const SocketContext = createContext();
 
@@ -46,10 +47,12 @@ export const SocketProvider = ({ children }) => {
 
   // Internal connect — no dependency on `socket` state to avoid stale closures
   const _doConnect = useCallback((code, participantId, isAdmin, participantName = '', avatarSeed = '') => {
-    // Abort if already connecting / connected to same room
+    // Abort if already connecting / connected to same room WITH same identity
     if (socketRef.current &&
         socketRef.current.readyState <= WebSocket.OPEN &&
-        codeRef.current === code) {
+        codeRef.current === code &&
+        participantIdRef.current === participantId &&
+        isAdminRef.current === isAdmin) {
       return;
     }
 
@@ -66,9 +69,7 @@ export const SocketProvider = ({ children }) => {
       socketRef.current.close(1000, 'Reconnecting');
     }
 
-    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-    const wsUrl = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
-    const ws = new WebSocket(`${wsUrl}/ws/${code}`);
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/${code}`);
     socketRef.current = ws;
     intentionalCloseRef.current = false;
 
@@ -97,16 +98,13 @@ export const SocketProvider = ({ children }) => {
         }));
       }
 
-      // Request state sync after reconnect (identity messages above also trigger sync,
-      // but an explicit request ensures we get the latest state in all scenarios)
-      if (reconnectCountRef.current === 0) {
-        // Small delay to let identity messages process first
-        setTimeout(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'request_state_sync' }));
-          }
-        }, 300);
-      }
+      // Always request state sync after connect/reconnect to ensure
+      // participants list and quiz state are up to date
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'request_state_sync' }));
+        }
+      }, 300);
     };
 
     ws.onmessage = (event) => {
