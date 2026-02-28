@@ -2,7 +2,7 @@
 // DiceBear Avatar System - Utility Functions
 
 const DICEBEAR_VERSION = '7.x';
-const AVATAR_STYLE = 'fun-emoji'; // Using fun-emoji for cartoon-style avatars
+const AVATAR_STYLE = 'adventurer'; // Using fun-emoji for cartoon-style avatars
 
 /**
  * Generate a DiceBear avatar URL from a seed

@@ -618,14 +618,14 @@ const QuizLobby = () => {
                           >
                             <DicebearAvatar 
                               seed={participant.avatarSeed}
-                              size="lg"
-                              className="shadow-lg w-12 h-12 md:w-16 md:h-16"
+                              size="sm"
+                              className="shadow-lg w-10 h-10 md:w-14 md:h-14"
                             />
-                            <div className="absolute -bottom-1 -right-1 w-3 h-3 md:w-4 md:h-4 bg-green-500 rounded-full border-2 border-white animate-pulse" />
+                            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full border-2 border-white animate-pulse" />
                           </motion.div>
                           
-                          <div className="text-center">
-                            <p className="font-bold text-white text-xs md:text-sm truncate max-w-[80px] md:max-w-[100px]">
+                          <div className="text-center mt-1 w-full px-1">
+                            <p className="font-bold text-white text-xs md:text-sm leading-tight break-words line-clamp-2 w-full max-w-[80px] md:max-w-[120px]" title={participant.name}>
                               {participant.name}
                               {isCurrentPlayer && ' (You)'}
                             </p>

@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trophy, Crown, Star, Home, BarChart3, XCircle, TrendingUp } from 'lucide-react';
+import { Trophy, Crown, Star, Home, BarChart3, XCircle, TrendingUp, Download } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -132,6 +132,322 @@ const FinalPodium = () => {
     }
   };
 
+  const downloadQuizStatsPDF = async () => {
+    try {
+      const { jsPDF } = await import('jspdf');
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 16;
+      let y = 0;
+
+      // Purple gradient background header
+      doc.setFillColor(88, 28, 135); // purple-900
+      doc.rect(0, 0, pageW, 38, 'F');
+      doc.setFillColor(67, 20, 108);
+      doc.rect(0, 20, pageW, 18, 'F');
+
+      // Trophy icon area
+      doc.setFillColor(251, 191, 36); // yellow-400
+      doc.circle(pageW / 2, 19, 10, 'F');
+      doc.setFontSize(14);
+      doc.setTextColor(255, 255, 255);
+      doc.text('🏆', pageW / 2, 21.5, { align: 'center' });
+
+      // Title
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(253, 224, 71); // yellow-300
+      doc.text('Quiz Statistics', pageW / 2, 32, { align: 'center' });
+
+      y = 46;
+
+      // Quiz code subtitle
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 80, 180);
+      doc.text(`Quiz Code: ${code}`, pageW / 2, y, { align: 'center' });
+      y += 10;
+
+      // Stats cards row
+      if (quizStats) {
+        const cards = [
+          { label: 'Players', value: String(quizStats.totalParticipants), bg: [243, 232, 255], text: [126, 34, 206] },
+          { label: 'Questions', value: String(quizStats.totalQuestions), bg: [219, 234, 254], text: [29, 78, 216] },
+          { label: 'Avg Score', value: String(quizStats.averageScore), bg: [220, 252, 231], text: [21, 128, 61] },
+          { label: 'Completed', value: `${quizStats.completionRate}%`, bg: [255, 237, 213], text: [194, 65, 12] },
+        ];
+
+        const cardW = (pageW - margin * 2 - 9) / 4;
+        cards.forEach((card, i) => {
+          const x = margin + i * (cardW + 3);
+          doc.setFillColor(...card.bg);
+          doc.roundedRect(x, y, cardW, 22, 3, 3, 'F');
+          doc.setFontSize(15);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(...card.text);
+          doc.text(card.value, x + cardW / 2, y + 11, { align: 'center' });
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(100, 100, 100);
+          doc.text(card.label, x + cardW / 2, y + 18, { align: 'center' });
+        });
+        y += 30;
+      }
+
+      // Leaderboard section header
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(88, 28, 135);
+      doc.text('🏆  Full Leaderboard', margin, y);
+      y += 8;
+
+      // Leaderboard table header
+      doc.setFillColor(88, 28, 135);
+      doc.roundedRect(margin, y, pageW - margin * 2, 8, 2, 2, 'F');
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(255, 255, 255);
+      doc.text('#', margin + 4, y + 5.5);
+      doc.text('Name', margin + 16, y + 5.5);
+      doc.text('Time (s)', pageW - margin - 34, y + 5.5);
+      doc.text('Score', pageW - margin - 10, y + 5.5, { align: 'right' });
+      y += 10;
+
+      // Leaderboard rows
+      fullLeaderboard.forEach((entry, index) => {
+        if (y > pageH - 20) {
+          doc.addPage();
+          y = margin;
+        }
+
+        const rowBg =
+          index === 0 ? [254, 249, 195] :
+          index === 1 ? [243, 244, 246] :
+          index === 2 ? [255, 237, 213] :
+          index % 2 === 0 ? [249, 250, 251] : [255, 255, 255];
+
+        doc.setFillColor(...rowBg);
+        doc.roundedRect(margin, y, pageW - margin * 2, 9, 1.5, 1.5, 'F');
+
+        // Rank badge
+        const rankBg =
+          index === 0 ? [251, 191, 36] :
+          index === 1 ? [156, 163, 175] :
+          index === 2 ? [251, 146, 60] :
+          [209, 213, 219];
+        doc.setFillColor(...rankBg);
+        doc.circle(margin + 4, y + 4.5, 3.5, 'F');
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(index < 3 ? 255 : 80, index < 3 ? 255 : 80, index < 3 ? 255 : 80);
+        doc.text(String(index + 1), margin + 4, y + 6, { align: 'center' });
+
+        // Name
+        doc.setFontSize(9);
+        doc.setFont('helvetica', index < 3 ? 'bold' : 'normal');
+        doc.setTextColor(30, 30, 30);
+        const nameText = entry.name.length > 28 ? entry.name.substring(0, 25) + '...' : entry.name;
+        doc.text(nameText, margin + 12, y + 5.5);
+
+        // Time
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100, 100, 100);
+        doc.text(`${entry.totalTime.toFixed(1)}s`, pageW - margin - 34, y + 5.5);
+
+        // Score badge
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(pageW - margin - 18, y + 1, 16, 7, 2, 2, 'F');
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 30, 30);
+        doc.text(String(entry.score), pageW - margin - 10, y + 5.8, { align: 'right' });
+
+        y += 11;
+      });
+
+      // Footer
+      y = Math.max(y + 6, pageH - 14);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(160, 160, 160);
+      doc.text(`Generated on ${new Date().toLocaleDateString()} • Quiz Code: ${code}`, pageW / 2, pageH - 8, { align: 'center' });
+
+      doc.save(`quiz-stats-${code}.pdf`);
+      toast.success('Quiz stats PDF downloaded!');
+    } catch (err) {
+      console.error('PDF generation error:', err);
+      toast.error('Failed to generate PDF');
+    }
+  };
+
+  const downloadMyStatsPDF = async () => {
+    if (!myResult) {
+      toast.error('Your result data is not available');
+      return;
+    }
+    try {
+      const { jsPDF } = await import('jspdf');
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 16;
+      let y = 0;
+
+      // Header background
+      doc.setFillColor(88, 28, 135);
+      doc.rect(0, 0, pageW, 38, 'F');
+      doc.setFillColor(67, 20, 108);
+      doc.rect(0, 20, pageW, 18, 'F');
+
+      // Star icon circle
+      doc.setFillColor(251, 191, 36);
+      doc.circle(pageW / 2, 19, 10, 'F');
+      doc.setFontSize(14);
+      doc.setTextColor(255, 255, 255);
+      doc.text('⭐', pageW / 2, 21.5, { align: 'center' });
+
+      // Title
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(253, 224, 71);
+      doc.text('My Quiz Results', pageW / 2, 32, { align: 'center' });
+
+      y = 46;
+
+      // Quiz code
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 80, 180);
+      doc.text(`Quiz Code: ${code}`, pageW / 2, y, { align: 'center' });
+      y += 12;
+
+      // Player name banner
+      doc.setFillColor(243, 232, 255);
+      doc.roundedRect(margin, y, pageW - margin * 2, 14, 3, 3, 'F');
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(88, 28, 135);
+      doc.text(myResult.name, pageW / 2, y + 9, { align: 'center' });
+      y += 22;
+
+      // My stats cards
+      const myCards = [
+        { label: 'My Rank', value: `#${myResult.rank}`, bg: [253, 224, 71], text: [146, 64, 14] },
+        { label: 'My Score', value: String(myResult.score), bg: [220, 252, 231], text: [21, 128, 61] },
+        { label: 'Total Time', value: `${myResult.totalTime ? myResult.totalTime.toFixed(1) : '-'}s`, bg: [219, 234, 254], text: [29, 78, 216] },
+        { label: 'Players', value: String(quizStats?.totalParticipants || fullLeaderboard.length), bg: [243, 232, 255], text: [126, 34, 206] },
+      ];
+
+      const cardW = (pageW - margin * 2 - 9) / 4;
+      myCards.forEach((card, i) => {
+        const x = margin + i * (cardW + 3);
+        doc.setFillColor(...card.bg);
+        doc.roundedRect(x, y, cardW, 22, 3, 3, 'F');
+        doc.setFontSize(15);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...card.text);
+        doc.text(card.value, x + cardW / 2, y + 11, { align: 'center' });
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100, 100, 100);
+        doc.text(card.label, x + cardW / 2, y + 18, { align: 'center' });
+      });
+      y += 30;
+
+      // Leaderboard section header
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(88, 28, 135);
+      doc.text('🏆  Full Leaderboard', margin, y);
+      y += 8;
+
+      // Table header
+      doc.setFillColor(88, 28, 135);
+      doc.roundedRect(margin, y, pageW - margin * 2, 8, 2, 2, 'F');
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(255, 255, 255);
+      doc.text('#', margin + 4, y + 5.5);
+      doc.text('Name', margin + 16, y + 5.5);
+      doc.text('Time (s)', pageW - margin - 34, y + 5.5);
+      doc.text('Score', pageW - margin - 10, y + 5.5, { align: 'right' });
+      y += 10;
+
+      fullLeaderboard.forEach((entry, index) => {
+        if (y > pageH - 20) {
+          doc.addPage();
+          y = margin;
+        }
+
+        const isMe = entry.participantId === participantId;
+
+        const rowBg = isMe ? [254, 243, 199] :
+          index === 0 ? [254, 249, 195] :
+          index === 1 ? [243, 244, 246] :
+          index === 2 ? [255, 237, 213] :
+          index % 2 === 0 ? [249, 250, 251] : [255, 255, 255];
+
+        doc.setFillColor(...rowBg);
+        doc.roundedRect(margin, y, pageW - margin * 2, 9, 1.5, 1.5, 'F');
+
+        // Highlight border for "me"
+        if (isMe) {
+          doc.setDrawColor(251, 191, 36);
+          doc.setLineWidth(0.5);
+          doc.roundedRect(margin, y, pageW - margin * 2, 9, 1.5, 1.5, 'S');
+          doc.setLineWidth(0.2);
+          doc.setDrawColor(200, 200, 200);
+        }
+
+        const rankBg =
+          index === 0 ? [251, 191, 36] :
+          index === 1 ? [156, 163, 175] :
+          index === 2 ? [251, 146, 60] :
+          [209, 213, 219];
+        doc.setFillColor(...rankBg);
+        doc.circle(margin + 4, y + 4.5, 3.5, 'F');
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(index < 3 ? 255 : 80, index < 3 ? 255 : 80, index < 3 ? 255 : 80);
+        doc.text(String(index + 1), margin + 4, y + 6, { align: 'center' });
+
+        doc.setFontSize(9);
+        doc.setFont('helvetica', isMe || index < 3 ? 'bold' : 'normal');
+        doc.setTextColor(30, 30, 30);
+        const nameText = entry.name.length > 28 ? entry.name.substring(0, 25) + '...' : entry.name;
+        doc.text(nameText + (isMe ? ' (You)' : ''), margin + 12, y + 5.5);
+
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100, 100, 100);
+        doc.text(`${entry.totalTime.toFixed(1)}s`, pageW - margin - 34, y + 5.5);
+
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(pageW - margin - 18, y + 1, 16, 7, 2, 2, 'F');
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 30, 30);
+        doc.text(String(entry.score), pageW - margin - 10, y + 5.8, { align: 'right' });
+
+        y += 11;
+      });
+
+      // Footer
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(160, 160, 160);
+      doc.text(`Generated on ${new Date().toLocaleDateString()} • Quiz Code: ${code}`, pageW / 2, pageH - 8, { align: 'center' });
+
+      doc.save(`my-stats-${code}.pdf`);
+      toast.success('My stats PDF downloaded!');
+    } catch (err) {
+      console.error('PDF generation error:', err);
+      toast.error('Failed to generate PDF');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-purple-800 to-indigo-900 flex items-center justify-center">
@@ -250,7 +566,7 @@ const FinalPodium = () => {
                     >
                       <div className="text-center">
                         <div className="text-5xl md:text-9xl font-black text-white mb-1 md:mb-3">2</div>
-                        <h3 className="text-base md:text-3xl font-bold text-white mb-1 md:mb-3 truncate">
+                        <h3 className="text-base md:text-3xl font-bold text-white mb-1 md:mb-3 line-clamp-2 break-words px-2" title={winners[1].name}>
                           {winners[1].name}
                         </h3>
                         <div className="bg-white/20 rounded-full px-2 md:px-6 py-1 md:py-3">
@@ -330,7 +646,7 @@ const FinalPodium = () => {
                         >
                           1
                         </motion.div>
-                        <h3 className="text-lg md:text-4xl font-bold text-white mb-2 md:mb-4 truncate drop-shadow-lg">
+                        <h3 className="text-lg md:text-4xl font-bold text-white mb-2 md:mb-4 line-clamp-2 break-words drop-shadow-lg px-2" title={winners[0].name}>
                           {winners[0].name}
                         </h3>
                         <div className="bg-white/40 backdrop-blur-sm rounded-full px-3 md:px-8 py-2 md:py-4 mb-1 md:mb-3">
@@ -375,7 +691,7 @@ const FinalPodium = () => {
                     >
                       <div className="text-center">
                         <div className="text-5xl md:text-9xl font-black text-white mb-1 md:mb-3">3</div>
-                        <h3 className="text-base md:text-3xl font-bold text-white mb-1 md:mb-3 truncate">
+                        <h3 className="text-base md:text-3xl font-bold text-white mb-1 md:mb-3 line-clamp-2 break-words px-2" title={winners[2].name}>
                           {winners[2].name}
                         </h3>
                         <div className="bg-white/20 rounded-full px-2 md:px-6 py-1 md:py-3">
@@ -441,6 +757,18 @@ const FinalPodium = () => {
               >
                 <BarChart3 className="w-6 h-6 md:w-8 md:h-8" />
                 View My Stats
+              </Button>
+            )}
+
+            {localStorage.getItem('participantId') && !localStorage.getItem('isAdmin') && (
+              <Button
+                onClick={downloadMyStatsPDF}
+                size="lg"
+                className="bg-emerald-600 text-white hover:bg-emerald-700 font-black text-lg md:text-2xl px-8 md:px-12 py-6 md:py-8 rounded-full shadow-2xl flex items-center gap-2 md:gap-4"
+                style={{ fontFamily: "'Fredoka', sans-serif" }}
+              >
+                <Download className="w-6 h-6 md:w-8 md:h-8" />
+                Download My Stats
               </Button>
             )}
 
@@ -526,12 +854,12 @@ const FinalPodium = () => {
 
                     <DicebearAvatar 
                       seed={entry.avatarSeed}
-                      size="md"
-                      className="shadow-md"
+                      size="sm"
+                      className="shadow-md w-10 h-10 md:w-12 md:h-12"
                     />
 
-                    <div className="flex-1 min-w-0">
-                      <div className="font-bold text-gray-900 truncate">{entry.name}</div>
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="font-bold text-gray-900 line-clamp-2 break-words" title={entry.name}>{entry.name}</div>
                       <div className="flex items-center gap-2 text-sm text-gray-600">
                         <TrendingUp className="w-4 h-4" />
                         <span>{entry.totalTime.toFixed(1)}s</span>
@@ -545,6 +873,16 @@ const FinalPodium = () => {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button
+                onClick={downloadQuizStatsPDF}
+                className="bg-emerald-600 text-white hover:bg-emerald-700 font-bold text-base px-6 py-3 rounded-full shadow flex items-center gap-2"
+              >
+                <Download className="w-5 h-5" />
+                Download Quiz Stats PDF
+              </Button>
             </div>
           </div>
         </DialogContent>

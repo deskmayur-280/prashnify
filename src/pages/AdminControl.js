@@ -401,15 +401,15 @@ const AdminControl = () => {
                         transition={{ type: 'spring', delay: i * 0.03 }}
                         className="flex flex-col items-center gap-1 p-2 rounded-xl hover:bg-white/5 transition-all group relative">
                         <div className="relative">
-                          <DicebearAvatar seed={p.avatarSeed} size="md" />
+                          <DicebearAvatar seed={p.avatarSeed} size="sm" className="w-10 h-10 md:w-12 md:h-12" />
                           {i === 0 && (
                             <div className="absolute -top-1 -right-1 bg-yellow-400 text-purple-900 rounded-full p-0.5">
                               <Crown className="w-2.5 h-2.5" />
                             </div>
                           )}
-                          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-[#0F0524]" />
+                          <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-[#0F0524]" />
                         </div>
-                        <span className="text-xs text-gray-300 truncate w-full text-center font-medium">{p.name}</span>
+                        <span className="text-xs md:text-sm text-gray-300 font-medium leading-tight text-center break-words line-clamp-2 w-full mt-1 px-1" title={p.name}>{p.name}</span>
                         {/* Kick button - visible on hover */}
                         {quizState === 'lobby' && (
                           <button

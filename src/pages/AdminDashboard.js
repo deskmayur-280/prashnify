@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Plus, PlayCircle, Users, MoreVertical, Search,
@@ -32,6 +32,7 @@ const AdminDashboard = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [quizToDelete, setQuizToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const authHeader = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` }
@@ -68,7 +69,6 @@ const AdminDashboard = () => {
       setLoading(false);
     } catch (error) {
       if (handleAuthError(error)) return;
-      console.error('Fetch quizzes error:', error);
       toast.error('Failed to load quizzes');
       setLoading(false);
     }
@@ -82,7 +82,6 @@ const AdminDashboard = () => {
       fetchQuizzes();
     } catch (error) {
       if (handleAuthError(error)) return;
-      console.error('Update status error:', error);
       toast.error('Failed to update quiz status');
     }
   };
@@ -103,7 +102,6 @@ const AdminDashboard = () => {
       setQuizToDelete(null);
     } catch (error) {
       if (handleAuthError(error)) return;
-      console.error('Delete quiz error:', error);
       toast.error('Failed to delete quiz');
     } finally {
       setDeleting(false);
@@ -139,90 +137,157 @@ const AdminDashboard = () => {
         backgroundSize: '40px 40px'
       }} />
 
-      {/* Header */}
+      {/* ── HEADER ── */}
       <header className="sticky top-0 z-50 border-b border-purple-500/20 backdrop-blur-xl"
         style={{ background: 'rgba(15,5,36,0.9)' }}>
-        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, #7C3AED, #4F46E5)' }}>
-              <Zap className="w-6 h-6 text-white" />
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-3 md:py-4">
+
+          {/* Mobile header — two rows when search is open */}
+          <div className="flex items-center justify-between gap-2">
+
+            {/* Logo */}
+            <div className="flex items-center gap-2.5 flex-shrink-0">
+              <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl flex items-center justify-center"
+                style={{ background: 'linear-gradient(135deg, #7C3AED, #4F46E5)' }}>
+                <Zap className="w-5 h-5 md:w-6 md:h-6 text-white" />
+              </div>
+              <div className="hidden xs:block">
+                <h1 className="text-lg md:text-xl font-bold text-white leading-none" style={{ fontFamily: 'Fredoka, sans-serif' }}>
+                  Prashnify
+                </h1>
+                <p className="text-xs text-purple-400">Admin Dashboard</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-white" style={{ fontFamily: 'Fredoka, sans-serif' }}>
-                Prashnify
-              </h1>
-              <p className="text-xs text-purple-400">Admin Dashboard</p>
+
+            {/* Desktop search bar */}
+            <div className="hidden md:flex flex-1 max-w-sm mx-6 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search quizzes..."
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl text-white text-sm outline-none focus:ring-2 focus:ring-purple-500/50"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+              />
+            </div>
+
+            {/* Right actions */}
+            <div className="flex items-center gap-1.5 md:gap-2">
+
+              {/* Mobile search toggle */}
+              <button
+                onClick={() => setSearchOpen(s => !s)}
+                className="md:hidden w-9 h-9 rounded-xl flex items-center justify-center text-gray-400 hover:text-white transition-colors"
+                style={{ background: 'rgba(255,255,255,0.06)' }}>
+                <Search className="w-4 h-4" />
+              </button>
+
+              <Button
+                onClick={() => navigate('/admin/create')}
+                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border-0 shadow-lg shadow-purple-500/25 h-9 px-3 md:px-4 text-sm">
+                <Plus className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:inline">New Quiz</span>
+              </Button>
+
+              <Button
+                onClick={handleLogout}
+                variant="ghost"
+                className="text-gray-400 hover:text-white hover:bg-red-500/20 h-9 w-9 p-0">
+                <LogOut className="w-4 h-4" />
+              </Button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button onClick={() => navigate('/admin/create')}
-              className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border-0 shadow-lg shadow-purple-500/25">
-              <Plus className="w-4 h-4 mr-2" />
-              New Quiz
-            </Button>
-            <Button onClick={handleLogout}
-              variant="ghost"
-              className="text-gray-400 hover:text-white hover:bg-red-500/20">
-              <LogOut className="w-4 h-4" />
-            </Button>
-          </div>
+          {/* Mobile expandable search */}
+          <AnimatePresence>
+            {searchOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden md:hidden">
+                <div className="relative mt-3 pb-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <input
+                    autoFocus
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="Search quizzes..."
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl text-white text-sm outline-none focus:ring-2 focus:ring-purple-500/50"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </header>
 
-      <main className="relative z-10 max-w-7xl mx-auto px-4 md:px-6 py-8">
+      <main className="relative z-10 max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-8">
 
-        {/* Stats row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          {[
-            { label: 'Total Quizzes', value: stats.total, icon: BarChart3, color: '#7C3AED' },
-            { label: 'Active', value: stats.active, icon: PlayCircle, color: '#10B981' },
-            { label: 'Total Players', value: stats.totalParticipants, icon: Users, color: '#F59E0B' },
-            { label: 'Inactive', value: stats.inactive, icon: PauseCircle, color: '#6B7280' },
-          ].map(({ label, value, icon: Icon, color }) => (
-            <div key={label}
-              className="rounded-2xl border p-5 relative overflow-hidden"
-              style={{ background: 'rgba(255,255,255,0.04)', borderColor: `${color}30` }}>
-              <div className="absolute top-0 right-0 w-24 h-24 rounded-full blur-2xl opacity-20"
-                style={{ background: color, transform: 'translate(30%, -30%)' }} />
-              <Icon className="w-5 h-5 mb-3" style={{ color }} />
-              <div className="text-3xl font-black text-white mb-1">{value}</div>
-              <div className="text-sm text-gray-400">{label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Search + filter */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-6">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-            <input
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search quizzes..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl text-white text-sm outline-none focus:ring-2 focus:ring-purple-500/50"
-              style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
-            />
+        {/* ── STATS ── */}
+        {/* Mobile: horizontal scroll strip | Desktop: 4-col grid */}
+        <div className="mb-6 md:mb-8">
+          {/* Mobile strip */}
+          <div className="flex gap-3 overflow-x-auto pb-2 md:hidden" style={{ scrollbarWidth: 'none' }}>
+            {[
+              { label: 'Total', value: stats.total, icon: BarChart3, color: '#7C3AED' },
+              { label: 'Active', value: stats.active, icon: PlayCircle, color: '#10B981' },
+              { label: 'Players', value: stats.totalParticipants, icon: Users, color: '#F59E0B' },
+              { label: 'Inactive', value: stats.inactive, icon: PauseCircle, color: '#6B7280' },
+            ].map(({ label, value, icon: Icon, color }) => (
+              <div key={label}
+                className="flex-shrink-0 rounded-2xl border p-4 relative overflow-hidden flex flex-col items-center justify-center min-w-[90px]"
+                style={{ background: 'rgba(255,255,255,0.04)', borderColor: `${color}30` }}>
+                <div className="absolute top-0 right-0 w-16 h-16 rounded-full blur-xl opacity-20"
+                  style={{ background: color, transform: 'translate(30%,-30%)' }} />
+                <Icon className="w-4 h-4 mb-2" style={{ color }} />
+                <div className="text-2xl font-black text-white">{value}</div>
+                <div className="text-xs text-gray-400 mt-0.5">{label}</div>
+              </div>
+            ))}
           </div>
-          <div className="flex gap-2">
-            {['all', 'active', 'inactive'].map(s => (
-              <button key={s} onClick={() => setFilterStatus(s)}
-                className={`px-4 py-2 rounded-xl text-sm font-semibold capitalize transition-all ${
-                  filterStatus === s
-                    ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-                style={filterStatus !== s ? { background: 'rgba(255,255,255,0.05)' } : {}}>
-                {s}
-              </button>
+
+          {/* Desktop grid */}
+          <div className="hidden md:grid grid-cols-4 gap-4">
+            {[
+              { label: 'Total Quizzes', value: stats.total, icon: BarChart3, color: '#7C3AED' },
+              { label: 'Active', value: stats.active, icon: PlayCircle, color: '#10B981' },
+              { label: 'Total Players', value: stats.totalParticipants, icon: Users, color: '#F59E0B' },
+              { label: 'Inactive', value: stats.inactive, icon: PauseCircle, color: '#6B7280' },
+            ].map(({ label, value, icon: Icon, color }) => (
+              <div key={label}
+                className="rounded-2xl border p-5 relative overflow-hidden"
+                style={{ background: 'rgba(255,255,255,0.04)', borderColor: `${color}30` }}>
+                <div className="absolute top-0 right-0 w-24 h-24 rounded-full blur-2xl opacity-20"
+                  style={{ background: color, transform: 'translate(30%, -30%)' }} />
+                <Icon className="w-5 h-5 mb-3" style={{ color }} />
+                <div className="text-3xl font-black text-white mb-1">{value}</div>
+                <div className="text-sm text-gray-400">{label}</div>
+              </div>
             ))}
           </div>
         </div>
 
-        {/* Quiz grid */}
+        {/* ── FILTER TABS ── */}
+        <div className="flex gap-2 mb-5 md:mb-6">
+          {['all', 'active', 'inactive'].map(s => (
+            <button key={s} onClick={() => setFilterStatus(s)}
+              className={`flex-1 md:flex-none px-4 py-2 rounded-xl text-sm font-semibold capitalize transition-all ${
+                filterStatus === s
+                  ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+              style={filterStatus !== s ? { background: 'rgba(255,255,255,0.05)' } : {}}>
+              {s}
+            </button>
+          ))}
+        </div>
+
+        {/* ── QUIZ LIST ── */}
         {loading ? (
-          <div className="text-center py-12">
+          <div className="text-center py-16">
             <div className="inline-block w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : filteredQuizzes.length === 0 ? (
@@ -230,7 +295,7 @@ const AdminDashboard = () => {
             style={{ background: 'rgba(255,255,255,0.02)' }}>
             <div className="text-6xl mb-4">🎮</div>
             <h3 className="text-xl font-semibold text-gray-300 mb-2">No quizzes found</h3>
-            <p className="text-gray-500 mb-6">
+            <p className="text-gray-500 mb-6 text-sm px-4">
               {searchQuery ? 'Try adjusting your search' : 'Start by creating your first quiz!'}
             </p>
             {!searchQuery && (
@@ -241,100 +306,210 @@ const AdminDashboard = () => {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredQuizzes.map((quiz, i) => (
-              <motion.div key={quiz.code}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.04 }}
-                className="rounded-2xl border overflow-hidden group hover:border-purple-500/50 transition-all"
-                style={{ background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.08)' }}>
+          <>
+            {/* Mobile: vertical list */}
+            <div className="flex flex-col gap-3 md:hidden">
+              {filteredQuizzes.map((quiz, i) => (
+                <motion.div key={quiz.code}
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className="rounded-2xl border overflow-hidden"
+                  style={{ background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.08)' }}>
 
-                {/* Accent bar */}
-                <div className="h-1 w-full" style={{
-                  background: quiz.status === 'active'
-                    ? 'linear-gradient(90deg, #7C3AED, #10B981)'
-                    : 'rgba(255,255,255,0.1)'
-                }} />
+                  {/* Accent bar */}
+                  <div className="h-1 w-full" style={{
+                    background: quiz.status === 'active'
+                      ? 'linear-gradient(90deg, #7C3AED, #10B981)'
+                      : 'rgba(255,255,255,0.1)'
+                  }} />
 
-                <div className="p-5">
-                  <div className="flex items-start justify-between mb-3">
-                    <span className={`text-xs px-2 py-1 rounded-full font-semibold ${
-                      quiz.status === 'active'
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/30'
-                    }`}>
-                      {quiz.status === 'active' ? '● Active' : '○ Inactive'}
-                    </span>
+                  <div className="p-4">
+                    {/* Row 1: title + status + menu */}
+                    <div className="flex items-start gap-2 mb-3">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-base font-bold text-white leading-tight truncate"
+                          style={{ fontFamily: 'Fredoka, sans-serif' }}>
+                          {quiz.title}
+                        </h3>
+                        <div className="font-mono text-xs text-purple-400 mt-0.5">PIN: {quiz.code}</div>
+                      </div>
 
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-all">
-                          <MoreVertical className="w-4 h-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="bg-gray-900 border-gray-700 text-gray-200">
-                        <DropdownMenuItem onClick={() => navigate(`/leaderboard/${quiz.code}`)} className="hover:bg-white/10">
-                          <Eye className="w-4 h-4 mr-2 text-blue-400" /> View Leaderboard
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => toggleQuizStatus(quiz.code, quiz.status)} className="hover:bg-white/10">
-                          {quiz.status === 'active'
-                            ? <><PauseCircle className="w-4 h-4 mr-2 text-yellow-400" /> Deactivate</>
-                            : <><PlayCircle className="w-4 h-4 mr-2 text-green-400" /> Activate</>}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleDeleteClick(quiz)} className="text-red-400 hover:bg-red-500/10">
-                          <Trash2 className="w-4 h-4 mr-2" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <span className={`text-xs px-2 py-1 rounded-full font-semibold ${
+                          quiz.status === 'active'
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-gray-500/20 text-gray-400 border border-gray-500/30'
+                        }`}>
+                          {quiz.status === 'active' ? '● Active' : '○ Off'}
+                        </span>
+
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-all flex-shrink-0">
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="bg-gray-900 border-gray-700 text-gray-200">
+                            <DropdownMenuItem onClick={() => navigate(`/leaderboard/${quiz.code}`)} className="hover:bg-white/10">
+                              <Eye className="w-4 h-4 mr-2 text-blue-400" /> View Leaderboard
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => toggleQuizStatus(quiz.code, quiz.status)} className="hover:bg-white/10">
+                              {quiz.status === 'active'
+                                ? <><PauseCircle className="w-4 h-4 mr-2 text-yellow-400" /> Deactivate</>
+                                : <><PlayCircle className="w-4 h-4 mr-2 text-green-400" /> Activate</>}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleDeleteClick(quiz)} className="text-red-400 hover:bg-red-500/10">
+                              <Trash2 className="w-4 h-4 mr-2" /> Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+
+                    {/* Row 2: meta chips */}
+                    <div className="flex items-center gap-3 text-xs text-gray-400 mb-4">
+                      <span className="flex items-center gap-1">
+                        <HelpCircle className="w-3.5 h-3.5" />{quiz.questionsCount}Q
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />{quiz.duration}m
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Users className="w-3.5 h-3.5" />{quiz.participantCount || 0}
+                      </span>
+                    </div>
+
+                    {/* Row 3: launch button */}
+                    <button
+                      onClick={() => handleStartQuiz(quiz.code)}
+                      disabled={quiz.status !== 'active'}
+                      className="w-full py-2.5 rounded-xl text-sm font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed text-white flex items-center justify-center gap-2"
+                      style={{
+                        background: quiz.status === 'active'
+                          ? 'linear-gradient(135deg, #7C3AED, #4F46E5)'
+                          : 'rgba(255,255,255,0.05)',
+                        boxShadow: quiz.status === 'active' ? '0 4px 15px rgba(124,58,237,0.4)' : 'none'
+                      }}>
+                      <PlayCircle className="w-4 h-4" /> Launch Quiz
+                    </button>
                   </div>
+                </motion.div>
+              ))}
+            </div>
 
-                  <h3 className="text-lg font-bold text-white mb-1 group-hover:text-purple-300 transition-colors"
-                    style={{ fontFamily: 'Fredoka, sans-serif' }}>
-                    {quiz.title}
-                  </h3>
-                  <div className="font-mono text-xs text-purple-400 mb-4">PIN: {quiz.code}</div>
+            {/* Desktop: grid */}
+            <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredQuizzes.map((quiz, i) => (
+                <motion.div key={quiz.code}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className="rounded-2xl border overflow-hidden group hover:border-purple-500/50 transition-all"
+                  style={{ background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.08)' }}>
 
-                  <div className="flex items-center gap-4 text-xs text-gray-400 mb-5">
-                    <span className="flex items-center gap-1"><HelpCircle className="w-3.5 h-3.5" />{quiz.questionsCount}Q</span>
-                    <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{quiz.duration}m</span>
-                    <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{quiz.participantCount || 0}</span>
+                  <div className="h-1 w-full" style={{
+                    background: quiz.status === 'active'
+                      ? 'linear-gradient(90deg, #7C3AED, #10B981)'
+                      : 'rgba(255,255,255,0.1)'
+                  }} />
+
+                  <div className="p-5">
+                    <div className="flex items-start justify-between mb-3">
+                      <span className={`text-xs px-2 py-1 rounded-full font-semibold ${
+                        quiz.status === 'active'
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-gray-500/20 text-gray-400 border border-gray-500/30'
+                      }`}>
+                        {quiz.status === 'active' ? '● Active' : '○ Inactive'}
+                      </span>
+
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-all">
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-gray-900 border-gray-700 text-gray-200">
+                          <DropdownMenuItem onClick={() => navigate(`/leaderboard/${quiz.code}`)} className="hover:bg-white/10">
+                            <Eye className="w-4 h-4 mr-2 text-blue-400" /> View Leaderboard
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => toggleQuizStatus(quiz.code, quiz.status)} className="hover:bg-white/10">
+                            {quiz.status === 'active'
+                              ? <><PauseCircle className="w-4 h-4 mr-2 text-yellow-400" /> Deactivate</>
+                              : <><PlayCircle className="w-4 h-4 mr-2 text-green-400" /> Activate</>}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleDeleteClick(quiz)} className="text-red-400 hover:bg-red-500/10">
+                            <Trash2 className="w-4 h-4 mr-2" /> Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+
+                    <h3 className="text-lg font-bold text-white mb-1 group-hover:text-purple-300 transition-colors"
+                      style={{ fontFamily: 'Fredoka, sans-serif' }}>
+                      {quiz.title}
+                    </h3>
+                    <div className="font-mono text-xs text-purple-400 mb-4">PIN: {quiz.code}</div>
+
+                    <div className="flex items-center gap-4 text-xs text-gray-400 mb-5">
+                      <span className="flex items-center gap-1"><HelpCircle className="w-3.5 h-3.5" />{quiz.questionsCount}Q</span>
+                      <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{quiz.duration}m</span>
+                      <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{quiz.participantCount || 0}</span>
+                    </div>
+
+                    <button
+                      onClick={() => handleStartQuiz(quiz.code)}
+                      disabled={quiz.status !== 'active'}
+                      className="w-full py-2.5 rounded-xl text-sm font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed text-white"
+                      style={{
+                        background: quiz.status === 'active'
+                          ? 'linear-gradient(135deg, #7C3AED, #4F46E5)'
+                          : 'rgba(255,255,255,0.05)',
+                        boxShadow: quiz.status === 'active' ? '0 4px 15px rgba(124,58,237,0.4)' : 'none'
+                      }}>
+                      <PlayCircle className="w-4 h-4 inline mr-2" /> Launch Quiz
+                    </button>
                   </div>
-
-                  <button
-                    onClick={() => handleStartQuiz(quiz.code)}
-                    disabled={quiz.status !== 'active'}
-                    className="w-full py-2.5 rounded-xl text-sm font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed text-white"
-                    style={{
-                      background: quiz.status === 'active'
-                        ? 'linear-gradient(135deg, #7C3AED, #4F46E5)'
-                        : 'rgba(255,255,255,0.05)',
-                      boxShadow: quiz.status === 'active' ? '0 4px 15px rgba(124,58,237,0.4)' : 'none'
-                    }}>
-                    <PlayCircle className="w-4 h-4 inline mr-2" /> Launch Quiz
-                  </button>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+                </motion.div>
+              ))}
+            </div>
+          </>
         )}
+
+        {/* Bottom padding for mobile (so content isn't hidden behind OS nav) */}
+        <div className="h-6 md:h-0" />
       </main>
 
+      {/* ── FAB: mobile new quiz shortcut ── */}
+      <motion.button
+        whileTap={{ scale: 0.92 }}
+        onClick={() => navigate('/admin/create')}
+        className="fixed bottom-6 right-4 md:hidden z-50 w-14 h-14 rounded-2xl flex items-center justify-center text-white shadow-2xl"
+        style={{
+          background: 'linear-gradient(135deg, #7C3AED, #4F46E5)',
+          boxShadow: '0 8px 30px rgba(124,58,237,0.5)'
+        }}>
+        <Plus className="w-6 h-6" />
+      </motion.button>
+
+      {/* ── DELETE DIALOG ── */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent className="bg-gray-900 border-gray-700 text-white">
+        <AlertDialogContent className="bg-gray-900 border-gray-700 text-white mx-4 rounded-2xl">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-white">Delete Quiz</AlertDialogTitle>
             <AlertDialogDescription className="text-gray-400">
               Are you sure you want to delete "<strong className="text-white">{quizToDelete?.title}</strong>"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting} className="bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700">Cancel</AlertDialogCancel>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel disabled={deleting} className="bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 w-full sm:w-auto">
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteConfirm}
               disabled={deleting}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
+              className="bg-red-600 hover:bg-red-700 text-white w-full sm:w-auto">
               {deleting ? 'Deleting...' : 'Delete Quiz'}
             </AlertDialogAction>
           </AlertDialogFooter>
