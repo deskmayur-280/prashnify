@@ -134,6 +134,12 @@ export const SocketProvider = ({ children }) => {
         return;
       }
 
+      // MASS-JOIN FIX 9: Handle server_busy — don't disconnect, just wait
+      if (data.type === 'server_busy') {
+        console.log(`⏳ Server busy, retrying in ${data.retry_in_ms || 2000}ms`);
+        return;
+      }
+
       _dispatch(data);
     };
 

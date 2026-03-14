@@ -3,29 +3,90 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#7C4DFF" />
+  <meta name="theme-color" content="#FF6B00" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-
   <meta name="description" content="Prashnify — Real-time multiplayer quiz platform" />
 
-  <!-- Google Fonts -->
+  <!--
+    1. preconnect so the TCP handshake happens before the stylesheet
+       request is even parsed.
+    2. preload the two woff2 files that hit screen on first paint.
+       Eliminates FOUT (flash of unstyled text) on mobile entirely.
+    3. Non-blocking font load via media="print" trick — swapped to
+       "all" once downloaded. Zero render-blocking.
+  -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <!-- Preload Orbitron 900 (hero title, first visible text) -->
   <link
-    href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap"
-    rel="stylesheet"
+    rel="preload"
+    as="font"
+    type="font/woff2"
+    href="https://fonts.gstatic.com/s/orbitron/v31/yMJMMIlzdpvBhQQL_SC3X9yhF25-T1nyGy6BoWgz.woff2"
+    crossorigin
   />
+  <!-- Preload Nunito 800 (question/answer body text) -->
+  <link
+    rel="preload"
+    as="font"
+    type="font/woff2"
+    href="https://fonts.gstatic.com/s/nunito/v26/XRXI3I6Li01BKofiOc5wtlZ2di8HDIkhdTQ3j6zbXWjgeg.woff2"
+    crossorigin
+  />
+
+  <!-- Non-blocking stylesheet — media=print prevents render block -->
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Nunito:wght@700;800;900&display=swap"
+    media="print"
+    onload="this.media='all'"
+  />
+  <noscript>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Nunito:wght@700;800;900&display=swap"
+    />
+  </noscript>
 
   <title>Prashnify</title>
 </head>
 
-<body class="bg-slate-50 text-slate-900">
-
+<body style="margin:0;background:#06010f;">
   <noscript>You need to enable JavaScript to run this app.</noscript>
-
-  <!-- React Root -->
   <div id="root"></div>
 
+  <!--
+    RAILWAY FREE-TIER KEEPALIVE
+    PERF FIX: Pings /ping every 3 min (was 8 min — too long, container sleeps).
+    First ping fires at 30s (was 2 min) to catch early cold-starts.
+    Uses /ping (instant, no DB call) instead of /health.
+    Uses sendBeacon (fire-and-forget, zero perf cost).
+    Only runs in production — skipped in local dev automatically.
+  -->
+  <script>
+    (function () {
+      var API = '%REACT_APP_API_URL%'; // CRA replaces at build time
+      if (!API || API === '%REACT_APP_API_URL%') return;
+
+      function ping() {
+        if (document.visibilityState === 'hidden') return;
+        var url = API + '/ping';
+        try {
+          if (navigator.sendBeacon) {
+            navigator.sendBeacon(url);
+          } else {
+            fetch(url, { method: 'GET', keepalive: true }).catch(function(){});
+          }
+        } catch(e) {}
+      }
+
+      setTimeout(function () {
+        ping();
+        setInterval(ping, 3 * 60 * 1000);  // every 3 min, not 8
+      }, 30 * 1000);  // first ping after 30s, not 2 min
+    })();
+  </script>
 </body>
 </html>

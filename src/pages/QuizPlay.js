@@ -59,9 +59,26 @@ const QuizPlay = () => {
   const [streak, setStreak] = useState(0);
   const [answeredCount, setAnsweredCount] = useState(0);
   const [totalParticipants, setTotalParticipants] = useState(0);
+  const [answerPercentage, setAnswerPercentage] = useState(0);
+  const [allAnsweredFlash, setAllAnsweredFlash] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
   const [answerStats, setAnswerStats] = useState({});
   const [muted, setMutedState] = useState(false);
+
+  // T1-A: answer_confirmed
+  const [answerConfirmed, setAnswerConfirmed] = useState(null);
+
+  // T1-C: kick overlay
+  const [kickedOverlay, setKickedOverlay] = useState(null);
+
+  // T2-A: time_warning
+  const [timeWarningActive, setTimeWarningActive] = useState(false);
+
+  // T2-B: first_correct banner
+  const [firstCorrectBanner, setFirstCorrectBanner] = useState(null);
+
+  // T2-C: streak_milestone banner
+  const [streakBanner, setStreakBanner] = useState(null);
 
   // Reactions
   const [floatingReactions, setFloatingReactions] = useState([]);
@@ -236,6 +253,12 @@ const QuizPlay = () => {
     const off1 = addListener('answer_count', (d) => {
       setAnsweredCount(d.answeredCount ?? 0);
       setTotalParticipants(d.totalParticipants ?? 0);
+      setAnswerPercentage(d.percentage ?? 0);
+      // T1-B: allAnswered flash
+      if (d.allAnswered) {
+        setAllAnsweredFlash(true);
+        setTimeout(() => setAllAnsweredFlash(false), 1200);
+      }
     });
 
     const off2 = addListener('sync_state', (d) => {
@@ -327,6 +350,8 @@ const QuizPlay = () => {
       resetQuestionState();
       setStreak(0);
       setScore(0);
+      setTimeWarningActive(false);
+      setAnswerConfirmed(null);
       // Set question start time for accurate answer timing
       questionStartTimeRef.current = d.question_start_time || Date.now();
       sounds.quizStart();
@@ -363,6 +388,10 @@ const QuizPlay = () => {
       setResult(null);
       setAnswerStats({});
       setAnsweredCount(0);
+      setTimeWarningActive(false);
+      setAnswerConfirmed(null);
+      setAnswerPercentage(0);
+      setAllAnsweredFlash(false);
       // Set question start time for accurate answer timing
       questionStartTimeRef.current = d.question_start_time || Date.now();
 
@@ -427,18 +456,71 @@ const QuizPlay = () => {
       }
     });
 
-    // Player was kicked by admin
+    // Player was kicked by admin — toast for others
     const off11 = addListener('participant_kicked', (d) => {
-      if (!isAdmin && d.participantId === participantId) {
-        stopTimer();
-        localStorage.removeItem('participantId');
-        localStorage.removeItem('participantName');
-        toast.error('You have been removed from this quiz by the host');
-        navigate('/');
+      // For other players: show toast
+      if (d.participantId !== participantId) {
+        const el = document.createElement('div');
+        el.className = 'kicked-toast';
+        el.style.cssText = 'background:rgba(15,5,36,0.95);color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:0.9rem;border:1px solid rgba(124,58,237,0.3);backdrop-filter:blur(8px);cursor:pointer;font-family:Fredoka,sans-serif;';
+        el.textContent = `⚡ ${d.name || d.playerName || 'Player'} was removed`;
+        el.onclick = () => el.remove();
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 3000);
       }
     });
 
-    return () => { off1(); off2(); off3(); off3b(); off3c(); off4(); off5(); off6(); off7(); off8(); off9(); off10(); off11(); };
+    // T1-C: you_were_kicked — full-screen overlay
+    const off12 = addListener('you_were_kicked', (d) => {
+      stopTimer();
+      setKickedOverlay({ reason: d.reason || 'Removed by host' });
+    });
+
+    // T1-A: answer_confirmed — lock button + float points
+    const off13 = addListener('answer_confirmed', (d) => {
+      setAnswerConfirmed(d);
+      // Auto-clear after animation completes
+      setTimeout(() => setAnswerConfirmed(null), 1500);
+    });
+
+    // T2-A: time_warning — CSS pulse + Web Audio ticks
+    const off14 = addListener('time_warning', () => {
+      setTimeWarningActive(true);
+      // Web Audio API: 5 ticks, one per second
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        for (let i = 0; i < 5; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.value = i < 4 ? 880 : 1200;
+          gain.gain.value = 0.15;
+          osc.start(ctx.currentTime + i);
+          osc.stop(ctx.currentTime + i + 0.12);
+        }
+      } catch (_) { /* Web Audio not available */ }
+    });
+
+    // T2-B: first_correct — slide banner from top
+    const off15 = addListener('first_correct', (d) => {
+      setFirstCorrectBanner(d.playerName || d.name || 'Someone');
+      setTimeout(() => setFirstCorrectBanner(null), 2500);
+    });
+
+    // T2-C: streak_milestone — cinematic banner
+    const off16 = addListener('streak_milestone', (d) => {
+      setStreakBanner({ playerName: d.playerName || d.name, streak: d.streak, badge: d.badge });
+      setTimeout(() => setStreakBanner(null), 3000);
+    });
+
+    // T3-A: participant_reconnected — toast
+    const off17 = addListener('participant_reconnected', (d) => {
+      toast.success(`${d.name || 'Player'} reconnected 👋`);
+    });
+
+    return () => { off1(); off2(); off3(); off3b(); off3c(); off4(); off5(); off6(); off7(); off8(); off9(); off10(); off11(); off12(); off13(); off14(); off15(); off16(); off17(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, addListener, code, navigate, isAdmin, participantId, startTimer, startTimerFrom, stopTimer, resetQuestionState]);
 
@@ -460,6 +542,28 @@ const QuizPlay = () => {
   }, [timeLeft, timerActive, answered, isAdmin, participantId, currentQuestionIndex, stopTimer, send, code]);
 
   // ─── Submit answer ───────────────────────────────────────────────
+  // FIX-F2: Answer submission with retry for network/5xx errors
+  const submitWithRetry = async (payload, maxRetries = 2) => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await axios.post(`${API}/submit-answer`, payload);
+      } catch (err) {
+        const status = err.response?.status;
+        const msg = err.response?.data?.detail || '';
+        // Don't retry 400s (already answered, bad request)
+        if (status && status < 500) throw err;
+        // Don't retry if already answered
+        if (msg.includes('already answered')) throw err;
+        // Retry on 5xx or network error
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+
   const handleSubmit = async () => {
     if (selectedOption === null || answered || isAdmin) return;
 
@@ -473,7 +577,7 @@ const QuizPlay = () => {
     stopTimer();
 
     try {
-      const response = await axios.post(`${API}/submit-answer`, {
+      const response = await submitWithRetry({
         participantId, quizCode: code,
         questionIndex: currentQuestionIndex,
         selectedOption, timeTaken
@@ -615,6 +719,55 @@ const QuizPlay = () => {
         )}
       </AnimatePresence>
 
+      {/* T1-C: KICKED OVERLAY */}
+      {kickedOverlay && (
+        <div className="fixed inset-0 z-[600] flex flex-col items-center justify-center"
+          style={{ background: 'rgba(15,5,36,0.97)', backdropFilter: 'blur(16px)' }}>
+          <div className="text-7xl mb-6">🚫</div>
+          <h2 className="text-3xl font-black text-white mb-3" style={{ fontFamily: 'Fredoka,sans-serif' }}>You were removed</h2>
+          <p className="text-gray-300 text-lg mb-8 text-center px-8">{kickedOverlay.reason}</p>
+          <div className="flex gap-4">
+            <button onClick={() => { send({ type: 'rejoin_request' }); setKickedOverlay(null); }}
+              className="px-8 py-3 rounded-xl font-bold text-white"
+              style={{ background: 'linear-gradient(135deg, #7C3AED, #4F46E5)' }}>
+              Request Rejoin
+            </button>
+            <button onClick={() => { setKickedOverlay(null); localStorage.removeItem('participantId'); localStorage.removeItem('participantName'); navigate('/'); }}
+              className="px-8 py-3 rounded-xl font-bold text-white bg-white/10 hover:bg-white/20">
+              Leave
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* T2-B: FIRST CORRECT BANNER */}
+      {firstCorrectBanner && (
+        <div className="first-correct-banner" onClick={() => setFirstCorrectBanner(null)}>
+          <div className="px-6 py-4 text-center" style={{ background: 'linear-gradient(135deg, #7C3AED, #4F46E5)', boxShadow: '0 4px 20px rgba(124,58,237,0.5)' }}>
+            <span className="text-white font-black text-lg" style={{ fontFamily: 'Fredoka,sans-serif' }}>
+              ⚡ {firstCorrectBanner} answered first!
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* T2-C: STREAK MILESTONE BANNER */}
+      {streakBanner && (
+        <div className={`streak-banner badge-${streakBanner.badge}`} onClick={() => setStreakBanner(null)}>
+          <div className="py-6 text-center">
+            <div className="text-white font-black text-4xl md:text-6xl" style={{ fontFamily: 'Fredoka One,Fredoka,sans-serif', textShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
+              {streakBanner.badge === 'hot' ? '🔥' : streakBanner.badge === 'fire' ? '🔥🔥' : '⚡👑⚡'}
+            </div>
+            <div className="text-white font-black text-2xl md:text-4xl mt-2" style={{ fontFamily: 'Fredoka,sans-serif', textShadow: '0 2px 12px rgba(0,0,0,0.3)' }}>
+              {streakBanner.playerName} — {streakBanner.streak} streak!
+            </div>
+            <div className="text-white/80 font-bold text-lg mt-1 uppercase tracking-wider">
+              {streakBanner.badge === 'hot' ? 'On Fire!' : streakBanner.badge === 'fire' ? 'UNSTOPPABLE!' : '🏆 LEGENDARY 🏆'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 5-SECOND COUNTDOWN OVERLAY */}
       <AnimatePresence>
         {isCountingDown && countdownValue !== null && (
@@ -733,7 +886,7 @@ const QuizPlay = () => {
               <motion.div
                 animate={timeLeft <= 5 && timeLeft > 0 ? { scale: [1, 1.1, 1] } : {}}
                 transition={{ duration: 0.5, repeat: Infinity }}
-                className="relative w-12 h-12 sm:w-14 sm:h-14 flex items-center justify-center flex-shrink-0"
+                className={`relative w-12 h-12 sm:w-14 sm:h-14 flex items-center justify-center flex-shrink-0 ${timeWarningActive ? 'time-warning-active' : ''}`}
               >
                 <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 56 56">
                   <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="3" />
@@ -762,11 +915,22 @@ const QuizPlay = () => {
               </div>
             )}
 
-            {/* Admin answered count */}
-            {isAdmin && (
-              <div className="text-white text-sm">
-                <span className="text-green-400 font-bold text-lg">{answeredCount}</span>
-                <span className="text-gray-400"> / {totalParticipants}</span>
+            {/* Admin answered count — T1-B: SVG arc */}
+            {isAdmin && totalParticipants > 0 && (
+              <div className="flex items-center gap-2">
+                <svg width="36" height="36" viewBox="0 0 36 36" className={allAnsweredFlash ? 'arc-flash-green' : ''}>
+                  <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="3" />
+                  <circle className="arc-progress" cx="18" cy="18" r="15" fill="none"
+                    stroke={allAnsweredFlash ? '#10B981' : '#7C3AED'}
+                    strokeWidth="3"
+                    strokeDasharray={2 * Math.PI * 15}
+                    strokeDashoffset={2 * Math.PI * 15 * (1 - answerPercentage / 100)}
+                    strokeLinecap="round"
+                    style={{ transition: 'stroke-dashoffset 0.4s ease, stroke 0.3s', transform: 'rotate(-90deg)', transformOrigin: '50% 50%' }}
+                  />
+                  <text x="18" y="20" textAnchor="middle" fill="white" fontSize="9" fontWeight="bold" fontFamily="Fredoka,sans-serif">{answerPercentage}%</text>
+                </svg>
+                <span className="text-gray-400 text-xs">{answeredCount}/{totalParticipants}</span>
               </div>
             )}
 
@@ -789,11 +953,11 @@ const QuizPlay = () => {
           </div>
         </div>
 
-        {/* Answer progress bar */}
+        {/* Answer progress bar — T1-B: uses answerPercentage */}
         {!showAnswerReveal && totalParticipants > 0 && (
           <div className="h-0.5 bg-white/10 mt-2">
             <motion.div className="h-full bg-gradient-to-r from-purple-500 to-emerald-400 rounded-full"
-              animate={{ width: `${(answeredCount / totalParticipants) * 100}%` }}
+              animate={{ width: `${answerPercentage}%` }}
               transition={{ duration: 0.4 }} />
           </div>
         )}
@@ -869,6 +1033,12 @@ const QuizPlay = () => {
                       style={{ fontSize: 'clamp(0.85rem, 2.2vw, 1.15rem)', overflowWrap: 'anywhere', wordBreak: 'break-word', flex: 1 }}>
                       {isTrueFalse ? (idx === 0 ? 'True' : 'False') : option}
                     </span>
+                    {/* T1-A: answer_confirmed ✓ icon */}
+                    {answerConfirmed && isSelected && !showAnswerReveal && (
+                      <div className="ml-auto flex-shrink-0 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                        <Check className="w-5 h-5 text-white" strokeWidth={3} />
+                      </div>
+                    )}
                     {showAnswerReveal && (isCorrect || isWrong) && (
                       <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
                         className="ml-auto flex-shrink-0 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
@@ -877,7 +1047,13 @@ const QuizPlay = () => {
                       </motion.div>
                     )}
                   </div>
-                  {isSelected && !showAnswerReveal && (
+                  {/* T1-A: float-up points */}
+                  {answerConfirmed && isSelected && (
+                    <div className="float-up-points" style={{ top: '-10px', left: '50%', transform: 'translateX(-50%)' }}>
+                      +{answerConfirmed.points} pts
+                    </div>
+                  )}
+                  {isSelected && !showAnswerReveal && !answerConfirmed && (
                     <motion.div className="absolute inset-0 bg-white/10"
                       animate={{ opacity: [0.05, 0.2, 0.05] }}
                       transition={{ duration: 1.2, repeat: Infinity }} />

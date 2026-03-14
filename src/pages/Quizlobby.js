@@ -175,6 +175,22 @@ const QuizLobby = () => {
       setParticipants(data.participants || []);
     });
 
+    // MASS-JOIN FIX 4 (frontend): Handle batched joins from server debounce
+    const cleanupBatchJoined = addListener('participants_batch_joined', (data) => {
+      if (data.participants && Array.isArray(data.participants)) {
+        setParticipants(prev => {
+          const existingIds = new Set(prev.map(p => p.id));
+          const newOnes = data.participants.filter(p => !existingIds.has(p.id));
+          if (newOnes.length > 0) {
+            confetti({ particleCount: Math.min(newOnes.length * 15, 80), spread: 50, origin: { y: 0.6 } });
+            toast.success(`${newOnes.length} player${newOnes.length > 1 ? 's' : ''} joined! 🎉`);
+            return [...prev, ...newOnes];
+          }
+          return prev;
+        });
+      }
+    });
+
     const cleanupAvatarUpdated = addListener('avatar_updated', (data) => {
       setParticipants(prev => prev.map(p => 
         p.id === data.participantId 
@@ -190,7 +206,12 @@ const QuizLobby = () => {
     });
 
     // Auto-redirect if quiz is already in progress (late join or reconnect)
+    // MASS-JOIN FIX 8 (frontend): Also rebuild participant list from all_participants
     const cleanupSyncState = addListener('sync_state', (data) => {
+      // Rebuild full participant list on reconnect/sync
+      if (data.all_participants && Array.isArray(data.all_participants)) {
+        setParticipants(data.all_participants);
+      }
       if (data.quiz_state && data.quiz_state !== 'lobby') {
         // Covers 'starting', 'question', 'answer_reveal', 'leaderboard', etc.
         navigate(`/quiz/${code}`);
@@ -231,6 +252,7 @@ const QuizLobby = () => {
     return () => {
       cleanupParticipantJoined();
       cleanupAllParticipants();
+      cleanupBatchJoined();
       cleanupAvatarUpdated();
       cleanupQuizStarting();
       cleanupSyncState();

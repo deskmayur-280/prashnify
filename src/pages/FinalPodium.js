@@ -62,7 +62,15 @@ const FinalPodium = () => {
       }
     });
 
-    return () => { off1(); off2(); };
+    // T1-C: you_were_kicked — handle kick with full-screen overlay
+    const off3 = addListener('you_were_kicked', (d) => {
+      localStorage.removeItem('participantId');
+      localStorage.removeItem('participantName');
+      toast.error(d.reason || 'You have been removed from this quiz');
+      navigate('/');
+    });
+
+    return () => { off1(); off2(); off3(); };
   }, [socket, addListener, navigate, isAdmin, participantId, code]);
 
   useEffect(() => {
@@ -542,7 +550,7 @@ const FinalPodium = () => {
                     initial={{ y: 200, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     transition={{ delay: 0.3, type: "spring" }}
-                    className="flex flex-col items-center w-[30%] md:w-72"
+                    className="flex flex-col items-center w-[30%] md:w-72 podium-card-2nd"
                     style={{ transform: 'scale(0.85)' }}
                   >
                     <motion.div
@@ -577,6 +585,12 @@ const FinalPodium = () => {
                             </span>
                           </div>
                         </div>
+                        {/* T3-B: Enhanced stats */}
+                        <div className="mt-2 flex flex-wrap justify-center gap-1 text-xs text-white/70">
+                          {winners[1].accuracy != null && <span>{winners[1].accuracy}% acc</span>}
+                          {winners[1].correctAnswers != null && <span>· {winners[1].correctAnswers} correct</span>}
+                          {winners[1].longestStreak != null && winners[1].longestStreak > 0 && <span>· {winners[1].longestStreak}🔥</span>}
+                        </div>
                       </div>
                     </motion.div>
                   </motion.div>
@@ -587,7 +601,7 @@ const FinalPodium = () => {
                     initial={{ y: 200, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     transition={{ delay: 0.1, type: "spring" }}
-                    className="flex flex-col items-center w-[35%] md:w-80"
+                    className="flex flex-col items-center w-[35%] md:w-80 podium-card-1st"
                   >
                     <motion.div
                       animate={{ 
@@ -657,6 +671,12 @@ const FinalPodium = () => {
                             </span>
                           </div>
                         </div>
+                        {/* T3-B: Enhanced stats */}
+                        <div className="flex flex-wrap justify-center gap-2 text-xs md:text-sm text-white/80 mt-1">
+                          {winners[0].accuracy != null && <span>{winners[0].accuracy}% accuracy</span>}
+                          {winners[0].correctAnswers != null && <span>· {winners[0].correctAnswers} correct</span>}
+                          {winners[0].longestStreak != null && winners[0].longestStreak > 0 && <span>· {winners[0].longestStreak}🔥 streak</span>}
+                        </div>
                       </div>
                     </motion.div>
                   </motion.div>
@@ -667,7 +687,7 @@ const FinalPodium = () => {
                     initial={{ y: 200, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     transition={{ delay: 0.5, type: "spring" }}
-                    className="flex flex-col items-center w-[30%] md:w-72"
+                    className="flex flex-col items-center w-[30%] md:w-72 podium-card-3rd"
                     style={{ transform: 'scale(0.85)' }}
                   >
                     <motion.div
@@ -701,6 +721,12 @@ const FinalPodium = () => {
                               {winners[2].score}
                             </span>
                           </div>
+                        </div>
+                        {/* T3-B: Enhanced stats */}
+                        <div className="mt-2 flex flex-wrap justify-center gap-1 text-xs text-white/70">
+                          {winners[2].accuracy != null && <span>{winners[2].accuracy}% acc</span>}
+                          {winners[2].correctAnswers != null && <span>· {winners[2].correctAnswers} correct</span>}
+                          {winners[2].longestStreak != null && winners[2].longestStreak > 0 && <span>· {winners[2].longestStreak}🔥</span>}
                         </div>
                       </div>
                     </motion.div>

@@ -120,7 +120,15 @@ const Leaderboard = () => {
       }
     });
 
-    return () => { off1(); off2(); off3(); off4(); };
+    // T1-C: you_were_kicked — direct kick message
+    const off5 = addListener('you_were_kicked', (d) => {
+      localStorage.removeItem('participantId');
+      localStorage.removeItem('participantName');
+      toast.error(d.reason || 'You have been removed from this quiz');
+      navigate('/');
+    });
+
+    return () => { off1(); off2(); off3(); off4(); off5(); };
   }, [socket, addListener, navigate, code, isAdmin, participantId]);
 
   const handleNext = () => { if (socket) send({ type: 'next_question' }); };

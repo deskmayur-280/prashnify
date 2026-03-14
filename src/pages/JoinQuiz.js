@@ -80,6 +80,23 @@ const JoinQuiz = () => {
     toast.success('🎲 Avatar randomized!');
   };
 
+  // MASS-JOIN FIX 7: Retry join on 503 (server busy) with exponential backoff
+  const joinWithRetry = async (payload, maxRetries = 3) => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await axios.post(`${API}/join`, payload);
+      } catch (err) {
+        if (err.response?.status === 503 && attempt < maxRetries) {
+          const retryAfter = parseInt(err.response.headers?.['retry-after'] || '2', 10);
+          toast.info(`⏳ Almost there... retrying in ${retryAfter}s`);
+          await new Promise(r => setTimeout(r, retryAfter * 1000));
+          continue;
+        }
+        throw err; // re-throw on non-503 or final attempt
+      }
+    }
+  };
+
   const handleJoin = async (e) => {
     e.preventDefault();
 
@@ -91,7 +108,7 @@ const JoinQuiz = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API}/join`, {
+      const response = await joinWithRetry({
         name: name.trim(),
         quizCode: quizCode.trim().toUpperCase(),
         avatarSeed: avatarSeed
@@ -106,8 +123,14 @@ const JoinQuiz = () => {
       navigate(`/lobby/${quizCode.toUpperCase()}`);
     } catch (error) {
       console.error('Join error:', error);
-      const msg = error.response?.data?.error || 'Failed to join quiz';
-      toast.error(msg);
+      const status = error.response?.status;
+      const msg = error.response?.data?.error || error.response?.data?.detail || 'Failed to join quiz';
+      
+      if (status === 503) {
+        toast.error('🔄 Server busy — please try again in a moment');
+      } else {
+        toast.error(msg);
+      }
 
       if (msg.includes('avatar') || msg.includes('unique')) {
         handleRandomizeAvatar();
