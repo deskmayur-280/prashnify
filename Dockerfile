@@ -4,6 +4,8 @@ FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+# FIXED: Reliability — disable assert statements and __debug__ in production
+ENV PYTHONOPTIMIZE=1
 
 WORKDIR /app
 
@@ -34,10 +36,14 @@ EXPOSE 8000
 # Railway injects PORT automatically; fall back to 8000
 # Use shell form so $PORT expands at runtime
 # --workers 1: WebSocket rooms are in-memory, multiple workers would split state
+# FIXED: Bug 5 — this CMD is the single source of truth (no startCommand in railway.toml)
+# FIXED: --log-level warning to reduce I/O pressure under load
 CMD uvicorn server:app \
     --host 0.0.0.0 \
     --port ${PORT:-8000} \
     --timeout-keep-alive 75 \
-    --ws-ping-interval 15 \
-    --ws-ping-timeout 25 \
-    --workers 1
+    --ws-ping-interval 20 \
+    --ws-ping-timeout 45 \
+    --workers 1 \
+    --loop uvloop \
+    --log-level warning
