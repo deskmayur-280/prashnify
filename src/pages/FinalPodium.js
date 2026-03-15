@@ -1,8 +1,7 @@
 // FinalPodium.js
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { motion, AnimatePresence } from 'framer-motion';
 import { Trophy, Crown, Star, Home, BarChart3, XCircle, TrendingUp, Download } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Button } from '@/components/ui/button';
@@ -19,9 +18,82 @@ import { API_BASE_URL } from '../config';
 
 const API = `${API_BASE_URL}/api`;
 
+/* ─── CSS injected once — all animations GPU-composited ─── */
+const STYLES = `
+@keyframes fp-float {
+  0%   { transform: translateY(0) rotate(0deg);        opacity: 0.75; }
+  100% { transform: translateY(-110vh) rotate(720deg); opacity: 0;    }
+}
+@keyframes fp-slide-down {
+  from { opacity: 0; transform: translateY(-60px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fp-scale-in {
+  from { opacity: 0; transform: scale(0); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes fp-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fp-slide-up {
+  from { opacity: 0; transform: translateY(200px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fp-podium-rise {
+  from { opacity: 0; transform: translateY(60px) scaleY(0.6); }
+  to   { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+@keyframes fp-bob-big {
+  0%, 100% { transform: translateY(0)    rotate(0deg);  }
+  30%       { transform: translateY(-20px) rotate(5deg);  }
+  60%       { transform: translateY(-20px) rotate(-5deg); }
+}
+@keyframes fp-bob-sm {
+  0%, 100% { transform: translateY(0);    }
+  50%       { transform: translateY(-10px); }
+}
+@keyframes fp-bob-xs {
+  0%, 100% { transform: translateY(0);   }
+  50%       { transform: translateY(-8px); }
+}
+@keyframes fp-crown {
+  0%, 100% { transform: translateX(-50%) rotate(0deg)   translateY(0);    }
+  30%       { transform: translateX(-50%) rotate(-10deg) translateY(-5px); }
+  60%       { transform: translateX(-50%) rotate(10deg)  translateY(-3px); }
+}
+@keyframes fp-glow-pulse {
+  0%, 100% { opacity: 0.3;  transform: scale(1);   }
+  50%       { opacity: 0.6;  transform: scale(1.3); }
+}
+@keyframes fp-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%);  }
+}
+@keyframes fp-number-pulse {
+  0%, 100% { transform: scale(1);    }
+  50%       { transform: scale(1.1); }
+}
+@keyframes fp-spin {
+  to { transform: rotate(360deg); }
+}
+`;
+
+let stylesInjected = false;
+function injectStyles() {
+  if (stylesInjected) return;
+  stylesInjected = true;
+  const el = document.createElement('style');
+  el.textContent = STYLES;
+  document.head.appendChild(el);
+}
+
+const PARTICLE_COLORS = ['#FFD700', '#FFA500', '#FF6B6B', '#4ECDC4', '#95E1D3'];
+
 const FinalPodium = () => {
   const { code } = useParams();
   const navigate = useNavigate();
+  const confettiFired = useRef(false);
   
   const [winners, setWinners] = useState([]);
   const [quizStats, setQuizStats] = useState(null);
@@ -34,6 +106,8 @@ const FinalPodium = () => {
   const myResult = fullLeaderboard.find(r => r.participantId === participantId);
 
   const { socket, isConnected, connect, addListener } = useSocket();
+
+  useEffect(() => { injectStyles(); }, []);
 
   // Connect WebSocket for live events
   useEffect(() => {
@@ -75,7 +149,6 @@ const FinalPodium = () => {
 
   useEffect(() => {
     fetchResults();
-    setTimeout(() => triggerMassiveConfetti(), 1000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -90,6 +163,17 @@ const FinalPodium = () => {
       setQuizStats(resultsRes.data.stats);
       setFullLeaderboard(leaderboardRes.data);
       setLoading(false);
+
+      // defer confetti so it never blocks first paint
+      if (!confettiFired.current) {
+        confettiFired.current = true;
+        const fire = () => triggerMassiveConfetti();
+        if ('requestIdleCallback' in window) {
+          requestIdleCallback(fire, { timeout: 1200 });
+        } else {
+          setTimeout(fire, 800);
+        }
+      }
     } catch (error) {
       console.error('Fetch final results error:', error);
       toast.error('Failed to load results');
@@ -459,39 +543,35 @@ const FinalPodium = () => {
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-purple-800 to-indigo-900 flex items-center justify-center">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="w-20 h-20 border-8 border-yellow-400 border-t-transparent rounded-full"
-        />
+        <div style={{
+          width: 80, height: 80,
+          border: '8px solid rgba(250,191,36,0.3)',
+          borderTopColor: '#FBBF24',
+          borderRadius: '50%',
+          animation: 'fp-spin 0.8s linear infinite',
+          willChange: 'transform',
+        }} />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-purple-800 to-indigo-900 relative overflow-hidden">
+
+      {/* Particles — pure CSS, replaces 100 motion.div JS-animated elements */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {[...Array(100)].map((_, i) => (
-          <motion.div
+        {Array.from({ length: 40 }, (_, i) => (
+          <div
             key={i}
-            className="absolute w-2 h-2 rounded-full"
+            className="absolute rounded-full"
             style={{
-              background: ['#FFD700', '#FFA500', '#FF6B6B', '#4ECDC4', '#95E1D3'][Math.floor(Math.random() * 5)]
-            }}
-            initial={{ 
-              x: Math.random() * window.innerWidth,
-              y: -20,
-              scale: Math.random() * 0.5 + 0.5
-            }}
-            animate={{ 
-              y: window.innerHeight + 20,
-              rotate: Math.random() * 360
-            }}
-            transition={{ 
-              duration: Math.random() * 5 + 5,
-              repeat: Infinity,
-              delay: Math.random() * 5,
-              ease: "linear"
+              background: PARTICLE_COLORS[i % 5],
+              width:  6 + (i % 4) * 2,
+              height: 6 + (i % 4) * 2,
+              left:   `${(i * 37 + 11) % 97}%`,
+              bottom: '-12px',
+              animation: `fp-float ${7 + (i % 6)}s ${(i * 0.4) % 5}s linear infinite`,
+              willChange: 'transform',
             }}
           />
         ))}
@@ -499,78 +579,63 @@ const FinalPodium = () => {
 
       <div className="relative z-10 min-h-screen p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
-          <motion.div
-            initial={{ y: -100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ type: "spring", duration: 1 }}
+
+          {/* Header */}
+          <div
             className="text-center mb-8 md:mb-12"
+            style={{ animation: 'fp-slide-down 1s cubic-bezier(0.22,1,0.36,1) both' }}
           >
-            <motion.div
-              animate={{ 
-                rotate: [0, -10, 10, -10, 0],
-                scale: [1, 1.2, 1]
-              }}
-              transition={{ duration: 2, repeat: Infinity }}
+            <div
               className="inline-block mb-4 md:mb-6"
+              style={{ animation: 'fp-bob-big 2s ease-in-out infinite', willChange: 'transform' }}
             >
               <div className="w-20 h-20 md:w-32 md:h-32 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-full flex items-center justify-center shadow-2xl">
                 <Trophy className="w-12 h-12 md:w-20 md:h-20 text-white" />
               </div>
-            </motion.div>
+            </div>
             
-            <motion.h1 
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", delay: 0.3 }}
+            <h1 
               className="text-5xl md:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-yellow-400 to-orange-500 mb-3 md:mb-4 drop-shadow-lg"
-              style={{ fontFamily: "'Fredoka', sans-serif" }}
+              style={{ fontFamily: "'Fredoka', sans-serif", animation: 'fp-scale-in 0.6s 0.3s cubic-bezier(0.22,1,0.36,1) both' }}
             >
               Game Over!
-            </motion.h1>
+            </h1>
 
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.5 }}
+            <p
               className="text-2xl md:text-3xl text-white/90 font-semibold"
+              style={{ animation: 'fp-fade-in 0.5s 0.5s both' }}
             >
               Final Results
-            </motion.p>
-          </motion.div>
+            </p>
+          </div>
 
           {winners.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
+            <div
               className="mb-8 md:mb-12"
+              style={{ animation: 'fp-fade-in 0.5s 0.2s both' }}
             >
               <div className="flex items-end justify-center gap-2 md:gap-8 mb-8 md:mb-12 px-2">
+
+                {/* 2nd place */}
                 {winners[1] && (
-                  <motion.div
-                    initial={{ y: 200, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.3, type: "spring" }}
+                  <div
                     className="flex flex-col items-center w-[30%] md:w-72 podium-card-2nd"
-                    style={{ transform: 'scale(0.85)' }}
+                    style={{ transform: 'scale(0.85)', animation: 'fp-slide-up 0.7s 0.3s cubic-bezier(0.22,1,0.36,1) both' }}
                   >
-                    <motion.div
-                      animate={{ y: [0, -10, 0] }}
-                      transition={{ duration: 2, repeat: Infinity }}
+                    <div
                       className="mb-3 md:mb-6"
+                      style={{ animation: 'fp-bob-sm 2s ease-in-out infinite', willChange: 'transform' }}
                     >
                       <DicebearAvatar 
                         seed={winners[1].avatarSeed || winners[1].name}
                         size="xl"
                         className="ring-4 ring-white/30 shadow-2xl w-16 h-16 md:w-24 md:h-24"
                       />
-                    </motion.div>
+                    </div>
 
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      transition={{ delay: 0.8, duration: 0.8, type: 'spring' }}
+                    <div
                       className="w-full bg-gradient-to-b from-gray-300 to-gray-500 rounded-t-2xl md:rounded-t-3xl p-3 md:p-8 shadow-2xl overflow-hidden"
-                      style={{ minHeight: '160px' }}
+                      style={{ minHeight: '160px', animation: 'fp-podium-rise 0.8s 0.8s cubic-bezier(0.22,1,0.36,1) both', transformOrigin: 'bottom' }}
                     >
                       <div className="text-center">
                         <div className="text-5xl md:text-9xl font-black text-white mb-1 md:mb-3">2</div>
@@ -592,32 +657,30 @@ const FinalPodium = () => {
                           {winners[1].longestStreak != null && winners[1].longestStreak > 0 && <span>· {winners[1].longestStreak}🔥</span>}
                         </div>
                       </div>
-                    </motion.div>
-                  </motion.div>
+                    </div>
+                  </div>
                 )}
 
+                {/* 1st place */}
                 {winners[0] && (
-                  <motion.div
-                    initial={{ y: 200, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.1, type: "spring" }}
+                  <div
                     className="flex flex-col items-center w-[35%] md:w-80 podium-card-1st"
+                    style={{ animation: 'fp-slide-up 0.7s 0.1s cubic-bezier(0.22,1,0.36,1) both' }}
                   >
-                    <motion.div
-                      animate={{ 
-                        y: [0, -20, 0],
-                        rotate: [0, 5, -5, 0]
-                      }}
-                      transition={{ duration: 3, repeat: Infinity }}
+                    <div
                       className="mb-3 md:mb-6 relative"
+                      style={{ animation: 'fp-bob-big 3s ease-in-out infinite', willChange: 'transform' }}
                     >
-                      <motion.div
-                        animate={{ 
-                          scale: [1, 1.3, 1],
-                          opacity: [0.3, 0.6, 0.3]
+                      {/* Glow — CSS pulse replaces motion scale+opacity */}
+                      <div
+                        className="absolute rounded-full bg-gradient-to-r from-yellow-300 via-yellow-400 to-orange-400"
+                        style={{
+                          inset: '-2rem',
+                          filter: 'blur(20px)',
+                          zIndex: 0,
+                          animation: 'fp-glow-pulse 2s ease-in-out infinite',
+                          willChange: 'opacity, transform',
                         }}
-                        transition={{ duration: 2, repeat: Infinity }}
-                        className="absolute -inset-4 md:-inset-8 bg-gradient-to-r from-yellow-300 via-yellow-400 to-orange-400 rounded-full blur-2xl"
                       />
                       
                       <DicebearAvatar 
@@ -626,40 +689,35 @@ const FinalPodium = () => {
                         className="relative ring-4 md:ring-8 ring-yellow-300/50 shadow-2xl w-20 h-20 md:w-40 md:h-40"
                       />
                       
-                      <motion.div
-                        animate={{ 
-                          rotate: [0, -10, 10, -10, 0],
-                          y: [0, -5, 0]
+                      {/* Crown — CSS replaces motion rotate+y */}
+                      <Crown
+                        className="absolute w-10 h-10 md:w-20 md:h-20 text-yellow-300 drop-shadow-2xl"
+                        style={{
+                          top: '-2.5rem',
+                          left: '50%',
+                          animation: 'fp-crown 2s ease-in-out infinite',
+                          willChange: 'transform',
                         }}
-                        transition={{ duration: 2, repeat: Infinity }}
-                        className="absolute -top-6 md:-top-12 left-1/2 transform -translate-x-1/2"
-                      >
-                        <Crown className="w-10 h-10 md:w-20 md:h-20 text-yellow-300 drop-shadow-2xl" />
-                      </motion.div>
-                    </motion.div>
+                      />
+                    </div>
 
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      transition={{ delay: 0.5, duration: 1, type: 'spring' }}
+                    <div
                       className="w-full bg-gradient-to-b from-yellow-400 to-orange-600 rounded-t-2xl md:rounded-t-3xl p-4 md:p-8 shadow-2xl relative overflow-hidden"
-                      style={{ minHeight: '192px' }}
+                      style={{ minHeight: '192px', animation: 'fp-podium-rise 0.8s 0.5s cubic-bezier(0.22,1,0.36,1) both', transformOrigin: 'bottom' }}
                     >
-                      <motion.div
-                        animate={{ x: ['-100%', '200%'] }}
-                        transition={{ duration: 2, repeat: Infinity, repeatDelay: 1 }}
-                        className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
-                        style={{ width: '50%' }}
+                      {/* Shimmer — CSS replaces motion x loop */}
+                      <div
+                        className="absolute inset-y-0 bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none"
+                        style={{ width: '50%', animation: 'fp-shimmer 2s 1s ease-in-out infinite', willChange: 'transform' }}
                       />
                       
                       <div className="text-center relative z-10">
-                        <motion.div
-                          animate={{ scale: [1, 1.1, 1] }}
-                          transition={{ duration: 1, repeat: Infinity }}
+                        <div
                           className="text-6xl md:text-[10rem] font-black text-white mb-1 md:mb-3 drop-shadow-2xl leading-none"
+                          style={{ animation: 'fp-number-pulse 1s ease-in-out infinite', willChange: 'transform' }}
                         >
                           1
-                        </motion.div>
+                        </div>
                         <h3 className="text-lg md:text-4xl font-bold text-white mb-2 md:mb-4 line-clamp-2 break-words drop-shadow-lg px-2" title={winners[0].name}>
                           {winners[0].name}
                         </h3>
@@ -678,36 +736,30 @@ const FinalPodium = () => {
                           {winners[0].longestStreak != null && winners[0].longestStreak > 0 && <span>· {winners[0].longestStreak}🔥 streak</span>}
                         </div>
                       </div>
-                    </motion.div>
-                  </motion.div>
+                    </div>
+                  </div>
                 )}
 
+                {/* 3rd place */}
                 {winners[2] && (
-                  <motion.div
-                    initial={{ y: 200, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.5, type: "spring" }}
+                  <div
                     className="flex flex-col items-center w-[30%] md:w-72 podium-card-3rd"
-                    style={{ transform: 'scale(0.85)' }}
+                    style={{ transform: 'scale(0.85)', animation: 'fp-slide-up 0.7s 0.5s cubic-bezier(0.22,1,0.36,1) both' }}
                   >
-                    <motion.div
-                      animate={{ y: [0, -8, 0] }}
-                      transition={{ duration: 2.5, repeat: Infinity }}
+                    <div
                       className="mb-3 md:mb-6"
+                      style={{ animation: 'fp-bob-xs 2.5s ease-in-out infinite', willChange: 'transform' }}
                     >
                       <DicebearAvatar 
                         seed={winners[2].avatarSeed || winners[2].name}
                         size="xl"
                         className="ring-4 ring-white/30 shadow-2xl w-16 h-16 md:w-24 md:h-24"
                       />
-                    </motion.div>
+                    </div>
 
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      transition={{ delay: 1.0, duration: 0.7, type: 'spring' }}
+                    <div
                       className="w-full bg-gradient-to-b from-orange-400 to-orange-600 rounded-t-2xl md:rounded-t-3xl p-3 md:p-8 shadow-2xl overflow-hidden"
-                      style={{ minHeight: '128px' }}
+                      style={{ minHeight: '128px', animation: 'fp-podium-rise 0.8s 1.0s cubic-bezier(0.22,1,0.36,1) both', transformOrigin: 'bottom' }}
                     >
                       <div className="text-center">
                         <div className="text-5xl md:text-9xl font-black text-white mb-1 md:mb-3">3</div>
@@ -729,30 +781,28 @@ const FinalPodium = () => {
                           {winners[2].longestStreak != null && winners[2].longestStreak > 0 && <span>· {winners[2].longestStreak}🔥</span>}
                         </div>
                       </div>
-                    </motion.div>
-                  </motion.div>
+                    </div>
+                  </div>
                 )}
+
               </div>
-            </motion.div>
+            </div>
           )}
 
           {participantId && !localStorage.getItem('isAdmin') && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 1.5 }}
-              className="text-center mb-8 text-white/80">
+            <div
+              className="text-center mb-8 text-white/80"
+              style={{ animation: 'fp-fade-in 0.5s 1.5s both' }}
+            >
               {myResult ? (
                 <p className="text-xl md:text-2xl font-semibold">You finished <span className="text-yellow-400 font-black text-2xl md:text-4xl px-2">#{myResult.rank}</span> with {myResult.score} points</p>
               ) : null}
-            </motion.div>
+            </div>
           )}
 
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 1 }}
+          <div
             className="flex flex-col sm:flex-row gap-4 md:gap-6 justify-center items-center"
+            style={{ animation: 'fp-fade-in 0.5s 1s both' }}
           >
             <Button
               onClick={() => setShowStatsDialog(true)}
@@ -819,7 +869,7 @@ const FinalPodium = () => {
                 End Quiz
               </Button>
             )}
-          </motion.div>
+          </div>
         </div>
       </div>
 

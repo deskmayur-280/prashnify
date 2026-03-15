@@ -199,9 +199,28 @@ const QuizLobby = () => {
       ));
     });
 
+    // ─── COUNTDOWN FIX ────────────────────────────────────────────────────
+    // quiz_starting = final broadcast AFTER countdown (quiz is actually starting now)
+    // Players should NOT navigate here; QuizPlay handles this event to start the timer.
+    // We only navigate players on countdown_start so they arrive at QuizPlay
+    // BEFORE the countdown ticks come in and can watch the full countdown.
     const cleanupQuizStarting = addListener('quiz_starting', () => {
-      // Navigate immediately — server state is already set when broadcast fires
+      // Do NOT navigate here — QuizPlay already listens for quiz_starting to start the timer.
+      // If somehow the player is still on Lobby when this fires (e.g. very slow connection),
+      // navigate them now as a fallback.
+      navigate(`/quiz/${code}`);
+    });
+
+    // Navigate ALL clients (admin + players) to QuizPlay as soon as countdown begins.
+    // QuizPlay has a countdown overlay that listens for countdown_start / countdown_tick.
+    const cleanupCountdownStart = addListener('countdown_start', (data) => {
       confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      // Navigate immediately — QuizPlay will show the countdown overlay
+      navigate(`/quiz/${code}`);
+    });
+
+    // If we somehow still receive countdown_tick on the lobby page, navigate now.
+    const cleanupCountdownTick = addListener('countdown_tick', () => {
       navigate(`/quiz/${code}`);
     });
 
@@ -216,14 +235,6 @@ const QuizLobby = () => {
         // Covers 'starting', 'question', 'answer_reveal', 'leaderboard', etc.
         navigate(`/quiz/${code}`);
       }
-    });
-
-    const cleanupCountdownStart = addListener('countdown_start', () => {
-      navigate(`/quiz/${code}`);
-    });
-
-    const cleanupCountdownTick = addListener('countdown_tick', () => {
-      navigate(`/quiz/${code}`);
     });
 
     // Quiz ended — redirect
@@ -292,9 +303,12 @@ const QuizLobby = () => {
     }
 
     if (isConnected) {
+      // Send the WS message first, then navigate.
+      // Admin will be taken to QuizPlay via the countdown_start listener above,
+      // just like participants — so everyone sees the full 5-second countdown.
       send({ type: 'quiz_starting' });
-      // Navigate immediately — the WS broadcast will fire on the quiz page
-      navigate(`/quiz/${code}`);
+      // Do NOT navigate here — wait for countdown_start broadcast (arrives in ~50ms)
+      // so the admin also lands on QuizPlay before the first countdown_tick fires.
     } else {
       toast.error('❌ Connection lost. Please wait for reconnection.');
     }
@@ -739,7 +753,8 @@ const QuizLobby = () => {
         </div>
       </div>
 
-      {/* Countdown Overlay */}
+      {/* Countdown Overlay — kept as a local fallback, but normally this won't 
+          be reached since navigation happens on countdown_start */}
       <AnimatePresence>
         {countdown !== null && countdown > 0 && (
           <motion.div
