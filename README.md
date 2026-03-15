@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
@@ -73,3 +74,6 @@ This section has moved here: [https://facebook.github.io/create-react-app/docs/t
 # prashnify_frontend
 frontend ready to deploy
 >>>>>>> da54008fdd0f7d7134faa9ee935a94c4993c41b9
+=======
+# prashnify
+>>>>>>> 0aadfbe5769d7f401d4988eef9c0aeebf77bfebd
