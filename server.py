@@ -156,6 +156,7 @@ mongo_client: Optional[AsyncIOMotorClient] = None
 db: Any = None  # Motor database object
 manager: Optional[ConnectionManager] = None
 redis_client: Any = None  # redis.asyncio client
+_keep_warm_task: Optional[asyncio.Task] = None  # PATCH-4: Prevent GC of keep-warm task
 
 
 # ============================================================================
@@ -305,6 +306,9 @@ class ConnectionManager:
 
         # PERF FIX 4: Store purge task refs to prevent GC
         self._purge_tasks: Dict[str, asyncio.Task] = {}
+
+        # PATCH-4: Store time_warning and auto_advance task refs to prevent GC
+        self._time_warning_tasks: Dict[str, asyncio.Task] = {}
 
         # PERF FIX 2: Debounce answer_count broadcasts (max 1 per 200ms per room)
         self._answer_count_dirty: Dict[str, bool] = {}
@@ -696,6 +700,12 @@ class ConnectionManager:
         """REL-5: Force-close a zombie room — disconnect all clients."""
         if quiz_code not in self.active_connections:
             return
+        # PATCH-4: Cancel all time_warning / auto_advance tasks for this room
+        keys_to_cancel = [k for k in self._time_warning_tasks if k.startswith(f"{quiz_code}:")]
+        for k in keys_to_cancel:
+            task = self._time_warning_tasks.pop(k, None)
+            if task and not task.done():
+                task.cancel()
         for ws in list(self.active_connections.get(quiz_code, set())):
             try:
                 await ws.close(code=1001, reason="Room expired")
@@ -745,18 +755,23 @@ class ConnectionManager:
                     logger.info(f"Cleaned {len(dead)} dead connections from {quiz_code}")
 
                 # HARDENED: Also clean user_sockets where socket is CLOSED
+                # PATCH-10: Only clean user_sockets entries belonging to THIS room's active_connections
                 stale_users = []
                 for uid, sock in list(self.user_sockets.items()):
                     try:
                         if sock.client_state.value >= 2:
-                            stale_users.append(uid)
+                            # PATCH-10: Only remove if socket belongs to this room
+                            if sock in self.active_connections.get(quiz_code, set()):
+                                stale_users.append(uid)
                     except Exception:
-                        stale_users.append(uid)
+                        if sock in self.active_connections.get(quiz_code, set()):
+                            stale_users.append(uid)
                 for uid in stale_users:
                     self.user_sockets.pop(uid, None)
-                    self._last_pong.pop(uid, None)
+                    if quiz_code in self._last_pong:
+                        self._last_pong[quiz_code].pop(uid, None)
                 if stale_users:
-                    logger.info(f"Cleaned {len(stale_users)} stale user_sockets entries")
+                    logger.info(f"Cleaned {len(stale_users)} stale user_sockets entries from {quiz_code}")
         except asyncio.CancelledError:
             pass
 
@@ -777,6 +792,13 @@ class ConnectionManager:
     def set_question(self, quiz_code: str, index: int, time_limit: int = 30):
         """Set question with precise timestamp and actual time limit"""
         if quiz_code in self.room_state:
+            # PATCH-4: Cancel previous time_warning / auto_advance tasks for this room
+            keys_to_cancel = [k for k in self._time_warning_tasks if k.startswith(f"{quiz_code}:")]
+            for k in keys_to_cancel:
+                task = self._time_warning_tasks.pop(k, None)
+                if task and not task.done():
+                    task.cancel()
+
             question_start = int(time.time() * 1000)
             self.room_state[quiz_code]["current_question"] = index
             self.room_state[quiz_code]["current_time_limit"] = time_limit
@@ -903,17 +925,9 @@ class ConnectionManager:
 
         return int(remaining)
 
-    async def close_room(self, quiz_code: str):
-        if quiz_code in self.active_connections:
-            for socket in list(self.active_connections[quiz_code]):
-                try:
-                    await socket.close()
-                except:
-                    pass
-
-            self.active_connections.pop(quiz_code, None)
-            if quiz_code in self.room_state:
-                self.room_state.pop(quiz_code, None)
+    # PATCH-1: Deleted duplicate close_room definition that was silently
+    # overwriting the complete one at line ~695, leaving broadcast workers,
+    # heartbeat tasks, and cleanup tasks as zombie coroutines.
 
 
     # CHANGE 5: Redis room snapshot for crash recovery
@@ -1137,7 +1151,7 @@ async def lifespan(app: FastAPI):
 
     # FIX 4: Initialize join semaphore inside lifespan (event loop exists)
     global _join_semaphore
-    _join_semaphore = asyncio.Semaphore(20)
+    _join_semaphore = asyncio.Semaphore(50)  # PATCH-15: Raised from 20 to 50
 
     logger.info("✓ Prashnify API ready (PRODUCTION v2)")
 
@@ -1150,7 +1164,8 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
             await asyncio.sleep(240)
-    asyncio.create_task(_keep_warm())
+    global _keep_warm_task  # PATCH-4: Store ref to prevent GC
+    _keep_warm_task = asyncio.create_task(_keep_warm())
 
     yield
 
@@ -1531,7 +1546,8 @@ async def calc_leaderboard(code: str) -> List[Dict]:
 
 async def get_quiz_with_cache(code: str) -> Optional[Dict]:
     """MASS-JOIN FIX 5: Stampede-safe quiz cache.
-    Only one DB read per cache miss regardless of concurrency."""
+    Only one DB read per cache miss regardless of concurrency.
+    PATCH-2: Verified event created before try block — safe from UnboundLocalError."""
     cached = await quiz_cache.get_quiz(code)
     if cached:
         return cached
@@ -1542,7 +1558,7 @@ async def get_quiz_with_cache(code: str) -> Optional[Dict]:
         await quiz_cache._loading[cache_key].wait()
         return await quiz_cache.get_quiz(code)
 
-    # We are the first — set the loading flag
+    # PATCH-2: Event + _loading assignment BEFORE try — prevents dead keys on DB exception
     event = asyncio.Event()
     quiz_cache._loading[cache_key] = event
     try:
@@ -1556,7 +1572,8 @@ async def get_quiz_with_cache(code: str) -> Optional[Dict]:
 
 
 async def get_questions_with_cache(code: str) -> List[Dict]:
-    """MASS-JOIN FIX 5: Stampede-safe questions cache."""
+    """MASS-JOIN FIX 5: Stampede-safe questions cache.
+    PATCH-2: Verified event created before try block — safe from UnboundLocalError."""
     cached = await quiz_cache.get_questions(code)
     if cached:
         return cached
@@ -1567,6 +1584,7 @@ async def get_questions_with_cache(code: str) -> List[Dict]:
         cached = await quiz_cache.get_questions(code)
         return cached if cached else []
 
+    # PATCH-2: Event + _loading assignment BEFORE try — prevents dead keys on DB exception
     event = asyncio.Event()
     quiz_cache._loading[cache_key] = event
     try:
@@ -1612,11 +1630,10 @@ async def health():
         status["status"] = "degraded"
     status["services"] = services
 
-
     if manager:
         status["websocket"] = manager.get_performance_stats()
 
-    return status
+    return status  # PATCH-3: Confirmed /health returns status dict (not None)
 
 
 @app.get("/api/time-sync")
@@ -2115,11 +2132,14 @@ async def submit_answer(ans: AnswerSubmit):
         else:
             is_correct = correct_answer == ans.selectedOption
 
-        # Calculate points with position bonus for tiebreaking
+        # PATCH-8: Mark answered BEFORE reading position to prevent race condition
+        # where two near-simultaneous submissions both read position 0
         answer_position = 0
         total_participants_count = 0
         if manager and ans.quizCode in manager.room_state:
-            answer_position = len(manager.room_state[ans.quizCode].get("answered", set()))
+            manager.mark_answered(ans.quizCode, ans.participantId)
+            answer_position = len(manager.room_state[ans.quizCode].get("answered", set())) - 1  # PATCH-8: subtract 1 because current player is now included
+            answer_position = max(0, answer_position)  # Guard against negative
             total_participants_count = len(manager.room_state[ans.quizCode].get("participants", {}))
 
         base_pts, time_bonus, streak_bonus = calc_points_v2(
@@ -2160,9 +2180,11 @@ async def submit_answer(ans: AnswerSubmit):
             db.participants.update_one({"id": ans.participantId}, update_doc)
         )
 
-        # Mark as answered IMMEDIATELY and broadcast
+        # PATCH-7: Invalidate leaderboard cache so next calc_leaderboard fetches fresh data
+        await quiz_cache.set_leaderboard(ans.quizCode, [])
+
+        # Broadcast answer count (mark_answered already done above in PATCH-8)
         if manager:
-            manager.mark_answered(ans.quizCode, ans.participantId)
             answered, total = manager.get_answer_count(ans.quizCode)
 
             # Track answer stats for distribution chart
@@ -2482,6 +2504,29 @@ async def _time_warning_task(quiz_code: str, question_index: int, time_limit: in
         logger.error(f"time_warning_task error: {e}")
 
 
+# PATCH-6: Server-side question auto-timeout — reveals answers if admin browser is backgrounded
+async def _auto_advance_task(quiz_code: str, question_index: int, time_limit: int, mgr: ConnectionManager):
+    """PATCH-6: Auto-reveal answers after time_limit + 2s grace if admin hasn't advanced."""
+    try:
+        await asyncio.sleep(time_limit + 2)  # 2s grace after time expires
+        # Only auto-advance if still on the same question in QUESTION state
+        if (mgr.get_state(quiz_code) == QuizState.QUESTION
+                and mgr.get_question(quiz_code) == question_index):
+            mgr.set_state(quiz_code, QuizState.ANSWER_REVEAL)
+            mgr.set_show_answers(quiz_code, True)
+            await mgr.broadcast(quiz_code, {
+                "type": "show_answer",
+                "quiz_state": QuizState.ANSWER_REVEAL,
+                "auto_advanced": True,
+                "server_time": int(time.time() * 1000),
+            }, priority=True)
+            logger.info(f"PATCH-6: Auto-revealed answers for {quiz_code} Q{question_index} (admin timeout)")
+    except asyncio.CancelledError:
+        pass  # Cancelled because admin manually advanced — expected
+    except Exception as e:
+        logger.error(f"_auto_advance_task error: {e}")
+
+
 async def handle_start_quiz(quiz_code: str, mgr: ConnectionManager):
     """Background task: 5-second countdown then send Q1.
     BUG 5 / CHANGE 3: Per-room start guard prevents double-start."""
@@ -2551,7 +2596,16 @@ async def handle_start_quiz(quiz_code: str, mgr: ConnectionManager):
         }, priority=True)
 
         # ENHANCED: Enhancement 4 — spawn time warning task for first question
-        asyncio.create_task(_time_warning_task(quiz_code, 0, first_time_limit, mgr))
+        # PATCH-4: Store task ref to prevent GC
+        tw_key = f"{quiz_code}:0"
+        mgr._time_warning_tasks[tw_key] = asyncio.create_task(
+            _time_warning_task(quiz_code, 0, first_time_limit, mgr)
+        )
+        # PATCH-6: Spawn auto-advance task for first question
+        auto_key = f"{quiz_code}:auto:0"
+        mgr._time_warning_tasks[auto_key] = asyncio.create_task(
+            _auto_advance_task(quiz_code, 0, first_time_limit, mgr)
+        )
 
         logger.info(
             f"✓ Quiz started: {quiz_code} Q0 limit={first_time_limit}s @ {question_start_time}"
@@ -2578,6 +2632,10 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
     try:
         await manager.connect(websocket, quiz_code)
 
+        # PATCH-11: Per-connection rate limiting variables
+        _msg_count = 0
+        _msg_window_start = time.time()
+
         # CHANGE 7: 45s receive timeout — if client sends nothing in 45s, close cleanly
         # so client reconnects immediately instead of hanging.
         while True:
@@ -2590,6 +2648,14 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
             except (WebSocketDisconnect, RuntimeError):
                 break
 
+            # PATCH-11: Per-message rate limiting (max 30 messages/sec per connection)
+            _msg_count += 1
+            if time.time() - _msg_window_start > 1.0:
+                _msg_count = 1
+                _msg_window_start = time.time()
+            if _msg_count > 30:
+                continue  # silently drop
+
             try:
                 msg = json.loads(data)
             except (json.JSONDecodeError, ValueError):
@@ -2597,421 +2663,463 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
 
             msg_type = msg.get("type")
 
-            if msg_type == "admin_joined":
-                is_admin = True
-                user_id = f"admin_{quiz_code}"
-                manager.set_admin(quiz_code, websocket)
+            # PATCH-12: Wrap message dispatch in try/except for graceful error handling
+            try:
 
-                # Get question count from cache
-                questions = await get_questions_with_cache(quiz_code)
-                q_count = len(questions)
-                manager.set_total_questions(quiz_code, q_count)
+                if msg_type == "admin_joined":
+                    # PATCH-5: JWT verification for admin_joined — require token field
+                    token = msg.get("token")
+                    if not token:
+                        await websocket.send_json({"type": "error", "message": "Unauthorized"})
+                        break
+                    payload = verify_token(token)
+                    if not payload or payload.get("role") != "admin":
+                        await websocket.send_json({"type": "error", "message": "Unauthorized"})
+                        break
 
-                logger.info(f"✓ Admin joined: {quiz_code}")
+                    is_admin = True
+                    user_id = f"admin_{quiz_code}"
+                    manager.set_admin(quiz_code, websocket)
 
-                # Load participants
-                parts = await db.participants.find(
-                    {"quizCode": quiz_code}, {"_id": 0}
-                ).to_list(config.MAX_PARTICIPANTS)
-
-                for p in parts:
-                    manager.add_participant(quiz_code, p)
-
-                room_state = manager.get_room_state(quiz_code)
-
-                await websocket.send_json(
-                    {
-                        "type": "all_participants",
-                        "participants": parts,
-                        **room_state,
-                    }
-                )
-
-            elif msg_type == "participant_joined":
-                participant_id = msg.get("participantId")
-                if participant_id:
-                    user_id = participant_id
-
-                    # CHANGE 5: Try rehydrating room state from Redis if process restarted
-                    await manager._try_rehydrate_from_redis(quiz_code)
-
-                    # REL-4: Wrap DB call with connection error handling
-                    try:
-                        p = await asyncio.wait_for(
-                            db.participants.find_one({"id": participant_id}, {"_id": 0}),
-                            timeout=5.0
-                        )
-                    except (pymongo.errors.ConnectionFailure, pymongo.errors.ServerSelectionTimeoutError, asyncio.TimeoutError) as e:
-                        logger.warning(f"MongoDB error in participant_joined: {e}")
-                        await websocket.send_json({"type": "server_error", "message": "Database busy — please retry"})
-                        p = None
-
-                    if p:
-                        # ENHANCED: Enhancement 6 — detect reconnection
-                        existing = manager.room_state.get(quiz_code, {}).get("participants", {}).get(participant_id)
-                        is_reconnect = existing and "disconnected_at" in existing
-
-                        # PERF FIX 4: Cancel pending purge task on reconnect
-                        purge_key = f"{quiz_code}:{participant_id}"
-                        if purge_key in manager._purge_tasks:
-                            manager._purge_tasks[purge_key].cancel()
-                            manager._purge_tasks.pop(purge_key, None)
-
-                        manager.add_participant(quiz_code, p)
-                        # Clear disconnected_at flag on reconnect
-                        if is_reconnect and quiz_code in manager.room_state:
-                            manager.room_state[quiz_code]["participants"][participant_id].pop("disconnected_at", None)
-
-                        # PERF FIX 1: Update lastActive only on WS connect
-                        await update_participant_active(participant_id)
-
-                        # Send instant state sync with full details
-                        room_state = manager.get_room_state(quiz_code)
-                        current_idx = room_state["current_question"]
-
-                        # Get current question data if in question or answer_reveal state
-                        current_question_data = None
-                        if room_state["quiz_state"] in (QuizState.QUESTION, QuizState.ANSWER_REVEAL):
-                            questions = await get_questions_with_cache(quiz_code)
-                            if current_idx < len(questions):
-                                q = questions[current_idx]
-                                # Remove correct answer for participants
-                                current_question_data = {
-                                    k: v
-                                    for k, v in q.items()
-                                    if k != "correctAnswer"
-                                }
-
-                        sync_msg = {
-                            "type": "sync_state",
-                            **room_state,
-                            "question_number": current_idx + 1,
-                            "current_question_data": current_question_data,
-                            "question": current_question_data,
-                            "reconnected": bool(is_reconnect),
-                            # MASS-JOIN FIX 8: Send full participant list so new joiner
-                            # sees everyone already in lobby, not just subsequent joins
-                            "all_participants": manager.get_all_participants(quiz_code),
-                        }
-
-                        # If in leaderboard state, tell client to redirect
-                        if room_state["quiz_state"] in [QuizState.LEADERBOARD, QuizState.FINAL_LEADERBOARD]:
-                            sync_msg["redirect_leaderboard"] = True
-                            sync_msg["is_final"] = room_state["quiz_state"] == QuizState.FINAL_LEADERBOARD
-                        elif room_state["quiz_state"] == QuizState.PODIUM:
-                            sync_msg["redirect_podium"] = True
-
-                        await websocket.send_json(sync_msg)
-
-                        # ENHANCED: Enhancement 6 — broadcast reconnection or join
-                        if is_reconnect:
-                            await manager.broadcast(
-                                quiz_code,
-                                {
-                                    "type": "participant_reconnected",
-                                    "participantId": participant_id,
-                                    "name": p.get("name", "Unknown"),
-                                },
-                            )
-                            logger.info(f"✓ Participant {p['name']} reconnected to {quiz_code}")
-                        else:
-                            # Broadcast to others
-                            await manager.broadcast(
-                                quiz_code,
-                                {
-                                    "type": "participant_joined",
-                                    "participant": {
-                                        "id": p["id"],
-                                        "name": p["name"],
-                                        "avatarSeed": p.get("avatarSeed", ""),
-                                    },
-                                },
-                            )
-                            logger.info(f"✓ Participant {p['name']} joined {quiz_code}")
-
-            elif msg_type == "request_state_sync":
-                # Handle explicit state sync request (for app return from background)
-                room_state = manager.get_room_state(quiz_code)
-                current_idx = room_state["current_question"]
-
-                # Get current question data if needed
-                current_question_data = None
-                if room_state["quiz_state"] in (QuizState.QUESTION, QuizState.ANSWER_REVEAL):
+                    # Get question count from cache
                     questions = await get_questions_with_cache(quiz_code)
-                    if current_idx < len(questions):
-                        q = questions[current_idx]
-                        if not is_admin:
-                            current_question_data = {
-                                k: v for k, v in q.items() if k != "correctAnswer"
-                            }
-                        else:
-                            current_question_data = q
+                    q_count = len(questions)
+                    manager.set_total_questions(quiz_code, q_count)
 
-                sync_msg = {
-                    "type": "sync_state",
-                    **room_state,
-                    "question_number": current_idx + 1,
-                    "current_question_data": current_question_data,
-                    "question": current_question_data,
-                }
+                    logger.info(f"✓ Admin joined: {quiz_code}")
 
-                # If in leaderboard state, tell client to redirect
-                if room_state["quiz_state"] in [QuizState.LEADERBOARD, QuizState.FINAL_LEADERBOARD]:
-                    sync_msg["redirect_leaderboard"] = True
-                    sync_msg["is_final"] = room_state["quiz_state"] == QuizState.FINAL_LEADERBOARD
-                elif room_state["quiz_state"] == QuizState.PODIUM:
-                    sync_msg["redirect_podium"] = True
+                    # Load participants
+                    parts = await db.participants.find(
+                        {"quizCode": quiz_code}, {"_id": 0}
+                    ).to_list(config.MAX_PARTICIPANTS)
 
-                await websocket.send_json(sync_msg)
+                    for p in parts:
+                        manager.add_participant(quiz_code, p)
 
-            elif msg_type == "quiz_starting":
-                if is_admin:
-                    # Run countdown + first question as a background task
-                    # so we don't block the WS handler
-                    asyncio.create_task(
-                        handle_start_quiz(quiz_code, manager)
-                    )
+                    room_state = manager.get_room_state(quiz_code)
 
-            elif msg_type == "auto_submit":
-                participant_id = msg.get("participantId")
-                if participant_id:
-                    manager.mark_answered(quiz_code, participant_id)
-                    # PERF FIX 2: Debounced answer_count broadcast
-                    await manager.broadcast_answer_count_debounced(quiz_code)
-
-            elif msg_type == "show_answer":
-                if is_admin:
-                    manager.set_state(quiz_code, QuizState.ANSWER_REVEAL)
-                    manager.set_show_answers(quiz_code, True)
-
-                    await manager.broadcast(
-                        quiz_code,
+                    await websocket.send_json(
                         {
-                            "type": "show_answer",
-                            "quiz_state": QuizState.ANSWER_REVEAL,
-                            "server_time": int(time.time() * 1000),
-                        },
-                        priority=True,
+                            "type": "all_participants",
+                            "participants": parts,
+                            **room_state,
+                        }
                     )
-                    logger.info(f"✓ Showing answers: {quiz_code}")
 
-            elif msg_type == "show_leaderboard":
-                if is_admin:
-                    current_q = manager.get_question(quiz_code)
-                    total_q = manager.room_state[quiz_code]["total_questions"]
+                elif msg_type == "participant_joined":
+                    participant_id = msg.get("participantId")
+                    if participant_id:
+                        user_id = participant_id
 
-                    if current_q >= total_q - 1:
-                        manager.set_state(quiz_code, QuizState.FINAL_LEADERBOARD)
-                    else:
-                        manager.set_state(quiz_code, QuizState.LEADERBOARD)
+                        # CHANGE 5: Try rehydrating room state from Redis if process restarted
+                        await manager._try_rehydrate_from_redis(quiz_code)
 
-                    is_final = current_q >= total_q - 1
-                    await manager.broadcast(
-                        quiz_code,
-                        {
-                            "type": "show_leaderboard",
-                            "quiz_state": manager.get_state(quiz_code),
-                            "current_question": current_q,
-                            "question_number": current_q + 1,  # 1-indexed for display
-                            "total_questions": total_q,
-                            "is_final": is_final,
-                            "server_time": int(time.time() * 1000),
-                        },
-                        priority=True,
-                    )
-                    logger.info(f"Show leaderboard: Q{current_q+1}/{total_q}, final={is_final}")
-
-            elif msg_type == "next_question":
-                if is_admin:
-                    current_q = manager.get_question(quiz_code)
-                    total_q = manager.room_state[quiz_code]["total_questions"]
-                    next_q = current_q + 1
-
-                    if next_q < total_q:
-                        # Get question data FIRST to know time_limit
-                        questions = await get_questions_with_cache(quiz_code)
-                        next_question = (
-                            questions[next_q] if next_q < len(questions) else None
-                        )
-                        next_time_limit = int(
-                            next_question.get("timeLimit", next_question.get("time_limit", 30))
-                        ) if next_question else 30
-
-                        # Set question WITH time_limit
-                        manager.set_question(quiz_code, next_q, next_time_limit)
-                        manager.clear_answers(quiz_code)
-                        manager.set_state(quiz_code, QuizState.QUESTION)
-
-                        question_start_time = manager.get_question_start_time(
-                            quiz_code
-                        )
-                        server_time = int(time.time() * 1000)
-
-                        # Strip correctAnswer for the broadcast
-                        safe_question = {
-                            k: v for k, v in next_question.items()
-                            if k != "correctAnswer"
-                        } if next_question else None
-
-                        await manager.broadcast(
-                            quiz_code,
-                            {
-                                "type": "next_question",
-                                "quiz_state": QuizState.QUESTION,
-                                "current_question": next_q,
-                                "question_number": next_q + 1,
-                                "total_questions": total_q,
-                                "question": safe_question,
-                                "time_limit": next_time_limit,
-                                "server_time": server_time,
-                                "question_start_time": question_start_time,
-                            },
-                            priority=True,
-                        )
-                        # ENHANCED: Enhancement 4 — spawn time warning task
-                        asyncio.create_task(
-                            _time_warning_task(quiz_code, next_q, next_time_limit, manager)
-                        )
-                        logger.info(
-                            f"✓ Next question {next_q}: {quiz_code} limit={next_time_limit}s @ {question_start_time}"
-                        )
-                    else:
-                        # ENHANCED: Enhancement 5 — podium with full stats
-                        manager.set_state(quiz_code, QuizState.PODIUM)
-                        leaderboard = await calc_leaderboard(quiz_code)
-                        total_participants = len(leaderboard)
-                        winners = []
-                        for entry in leaderboard[:3]:
-                            # Fetch participant to compute accuracy and longest streak
-                            part = await db.participants.find_one(
-                                {"id": entry.get("participantId"), "quizCode": quiz_code},
-                                {"_id": 0}
+                        # REL-4: Wrap DB call with connection error handling
+                        try:
+                            p = await asyncio.wait_for(
+                                db.participants.find_one({"id": participant_id}, {"_id": 0}),
+                                timeout=5.0
                             )
-                            answers = part.get("answers", []) if part else []
-                            correct_count = sum(1 for a in answers if a.get("isCorrect"))
-                            total_answered = len(answers)
-                            accuracy = round((correct_count / total_answered * 100) if total_answered else 0, 1)
-                            # Compute longest streak of consecutive correct answers
-                            longest_streak = 0
-                            current_s = 0
-                            for a in answers:
-                                if a.get("isCorrect"):
-                                    current_s += 1
-                                    if current_s > longest_streak:
-                                        longest_streak = current_s
-                                else:
-                                    current_s = 0
-                            winners.append({
-                                **entry,
-                                "correctAnswers": correct_count,
-                                "accuracy": accuracy,
-                                "longestStreak": longest_streak,
-                            })
+                        except (pymongo.errors.ConnectionFailure, pymongo.errors.ServerSelectionTimeoutError, asyncio.TimeoutError) as e:
+                            logger.warning(f"MongoDB error in participant_joined: {e}")
+                            await websocket.send_json({"type": "server_error", "message": "Database busy — please retry"})
+                            p = None
+
+                        if p:
+                            # ENHANCED: Enhancement 6 — detect reconnection
+                            existing = manager.room_state.get(quiz_code, {}).get("participants", {}).get(participant_id)
+                            is_reconnect = existing and "disconnected_at" in existing
+
+                            # PERF FIX 4: Cancel pending purge task on reconnect
+                            purge_key = f"{quiz_code}:{participant_id}"
+                            if purge_key in manager._purge_tasks:
+                                manager._purge_tasks[purge_key].cancel()
+                                manager._purge_tasks.pop(purge_key, None)
+
+                            manager.add_participant(quiz_code, p)
+                            # Clear disconnected_at flag on reconnect
+                            if is_reconnect and quiz_code in manager.room_state:
+                                manager.room_state[quiz_code]["participants"][participant_id].pop("disconnected_at", None)
+
+                            # PERF FIX 1: Update lastActive only on WS connect
+                            await update_participant_active(participant_id)
+
+                            # Send instant state sync with full details
+                            room_state = manager.get_room_state(quiz_code)
+                            current_idx = room_state["current_question"]
+
+                            # Get current question data if in question or answer_reveal state
+                            current_question_data = None
+                            if room_state["quiz_state"] in (QuizState.QUESTION, QuizState.ANSWER_REVEAL):
+                                questions = await get_questions_with_cache(quiz_code)
+                                if current_idx < len(questions):
+                                    q = questions[current_idx]
+                                    # Remove correct answer for participants
+                                    current_question_data = {
+                                        k: v
+                                        for k, v in q.items()
+                                        if k != "correctAnswer"
+                                    }
+
+                            sync_msg = {
+                                "type": "sync_state",
+                                **room_state,
+                                "question_number": current_idx + 1,
+                                "current_question_data": current_question_data,
+                                "question": current_question_data,
+                                "reconnected": bool(is_reconnect),
+                                # MASS-JOIN FIX 8: Send full participant list so new joiner
+                                # sees everyone already in lobby, not just subsequent joins
+                                "all_participants": manager.get_all_participants(quiz_code),
+                            }
+
+                            # If in leaderboard state, tell client to redirect
+                            if room_state["quiz_state"] in [QuizState.LEADERBOARD, QuizState.FINAL_LEADERBOARD]:
+                                sync_msg["redirect_leaderboard"] = True
+                                sync_msg["is_final"] = room_state["quiz_state"] == QuizState.FINAL_LEADERBOARD
+                            elif room_state["quiz_state"] == QuizState.PODIUM:
+                                sync_msg["redirect_podium"] = True
+
+                            await websocket.send_json(sync_msg)
+
+                            # ENHANCED: Enhancement 6 — broadcast reconnection or join
+                            if is_reconnect:
+                                await manager.broadcast(
+                                    quiz_code,
+                                    {
+                                        "type": "participant_reconnected",
+                                        "participantId": participant_id,
+                                        "name": p.get("name", "Unknown"),
+                                    },
+                                )
+                                logger.info(f"✓ Participant {p['name']} reconnected to {quiz_code}")
+                            else:
+                                # Broadcast to others
+                                await manager.broadcast(
+                                    quiz_code,
+                                    {
+                                        "type": "participant_joined",
+                                        "participant": {
+                                            "id": p["id"],
+                                            "name": p["name"],
+                                            "avatarSeed": p.get("avatarSeed", ""),
+                                        },
+                                    },
+                                )
+                                logger.info(f"✓ Participant {p['name']} joined {quiz_code}")
+
+                elif msg_type == "request_state_sync":
+                    # Handle explicit state sync request (for app return from background)
+                    room_state = manager.get_room_state(quiz_code)
+                    current_idx = room_state["current_question"]
+
+                    # Get current question data if needed
+                    current_question_data = None
+                    if room_state["quiz_state"] in (QuizState.QUESTION, QuizState.ANSWER_REVEAL):
+                        questions = await get_questions_with_cache(quiz_code)
+                        if current_idx < len(questions):
+                            q = questions[current_idx]
+                            if not is_admin:
+                                current_question_data = {
+                                    k: v for k, v in q.items() if k != "correctAnswer"
+                                }
+                            else:
+                                current_question_data = q
+
+                    sync_msg = {
+                        "type": "sync_state",
+                        **room_state,
+                        "question_number": current_idx + 1,
+                        "current_question_data": current_question_data,
+                        "question": current_question_data,
+                    }
+
+                    # If in leaderboard state, tell client to redirect
+                    if room_state["quiz_state"] in [QuizState.LEADERBOARD, QuizState.FINAL_LEADERBOARD]:
+                        sync_msg["redirect_leaderboard"] = True
+                        sync_msg["is_final"] = room_state["quiz_state"] == QuizState.FINAL_LEADERBOARD
+                    elif room_state["quiz_state"] == QuizState.PODIUM:
+                        sync_msg["redirect_podium"] = True
+
+                    await websocket.send_json(sync_msg)
+
+                elif msg_type == "quiz_starting":
+                    if is_admin:
+                        # Run countdown + first question as a background task
+                        # so we don't block the WS handler
+                        asyncio.create_task(
+                            handle_start_quiz(quiz_code, manager)
+                        )
+
+                elif msg_type == "auto_submit":
+                    participant_id = msg.get("participantId")
+                    if participant_id:
+                        # PATCH-9: Guard against missing room state
+                        if quiz_code in manager.room_state:
+                            manager.mark_answered(quiz_code, participant_id)
+                            # PERF FIX 2: Debounced answer_count broadcast
+                            await manager.broadcast_answer_count_debounced(quiz_code)
+
+                elif msg_type == "show_answer":
+                    if is_admin:
+                        manager.set_state(quiz_code, QuizState.ANSWER_REVEAL)
+                        manager.set_show_answers(quiz_code, True)
+
                         await manager.broadcast(
                             quiz_code,
                             {
-                                "type": "show_podium",
-                                "quiz_state": QuizState.PODIUM,
-                                "winners": winners,
-                                "totalParticipants": total_participants,
+                                "type": "show_answer",
+                                "quiz_state": QuizState.ANSWER_REVEAL,
                                 "server_time": int(time.time() * 1000),
                             },
                             priority=True,
                         )
-                        logger.info(f"✓ Showing podium: {quiz_code} (top {len(winners)} winners)")
+                        logger.info(f"✓ Showing answers: {quiz_code}")
 
-            elif msg_type == "ping":
-                await websocket.send_json(
-                    {
-                        "type": "pong",
-                        "t": int(time.time() * 1000),
-                        "clientTime": msg.get("clientTime") or msg.get("t"),
-                        "serverTime": int(time.time() * 1000)
-                    }
-                )
-            elif msg_type == "pong":
-                # FIX 12: Per-room pong tracking
-                if user_id:
-                    if quiz_code not in manager._last_pong:
-                        manager._last_pong[quiz_code] = {}
-                    manager._last_pong[quiz_code][user_id] = time.time()
+                elif msg_type == "show_leaderboard":
+                    if is_admin:
+                        # PATCH-9: Guard against missing room state
+                        room = manager.room_state.get(quiz_code)
+                        if not room:
+                            continue
+                        current_q = manager.get_question(quiz_code)
+                        total_q = room.get("total_questions", 0)
 
-            elif msg_type == "reaction":
-                allowed = ["🔥", "😱", "👏", "💪", "🤔", "😂", "🎉", "⚡"]
-                emoji = msg.get("emoji", "")
-                if emoji in allowed and user_id and not is_admin:
-                    # Rate limit: max 1 reaction per 2 seconds per user
-                    now = time.time()
-                    last_reaction = manager.room_state.get(quiz_code, {}).get("last_reaction", {}).get(user_id, 0)
-                    if now - last_reaction >= 2.0:
-                        if quiz_code in manager.room_state:
-                            if "last_reaction" not in manager.room_state[quiz_code]:
-                                manager.room_state[quiz_code]["last_reaction"] = {}
-                            manager.room_state[quiz_code]["last_reaction"][user_id] = now
+                        if current_q >= total_q - 1:
+                            manager.set_state(quiz_code, QuizState.FINAL_LEADERBOARD)
+                        else:
+                            manager.set_state(quiz_code, QuizState.LEADERBOARD)
 
-                        await manager.broadcast(quiz_code, {
-                            "type": "reaction",
-                            "emoji": emoji,
-                            "userId": user_id[:8],
-                        })
-
-            elif msg_type == "kick_player":
-                if is_admin:
-                    kick_id = msg.get("participantId")
-                    kick_reason = msg.get("reason") or "Removed by host"  # ENHANCED: Enhancement 8
-                    if kick_id:
-                        # Remove from DB
-                        kicked = await db.participants.find_one_and_delete(
-                            {"id": kick_id, "quizCode": quiz_code},
-                            {"_id": 0, "name": 1, "id": 1},
+                        is_final = current_q >= total_q - 1
+                        await manager.broadcast(
+                            quiz_code,
+                            {
+                                "type": "show_leaderboard",
+                                "quiz_state": manager.get_state(quiz_code),
+                                "current_question": current_q,
+                                "question_number": current_q + 1,  # 1-indexed for display
+                                "total_questions": total_q,
+                                "is_final": is_final,
+                                "server_time": int(time.time() * 1000),
+                            },
+                            priority=True,
                         )
-                        if kicked:
-                            # Decrement participant count
-                            await db.quizzes.update_one(
-                                {"code": quiz_code},
-                                {"$inc": {"participantCount": -1}},
+                        logger.info(f"Show leaderboard: Q{current_q+1}/{total_q}, final={is_final}")
+
+                elif msg_type == "next_question":
+                    if is_admin:
+                        # PATCH-9: Guard against missing room state
+                        room = manager.room_state.get(quiz_code)
+                        if not room:
+                            continue
+                        current_q = manager.get_question(quiz_code)
+                        total_q = room.get("total_questions", 0)
+                        next_q = current_q + 1
+
+                        if next_q < total_q:
+                            # Get question data FIRST to know time_limit
+                            questions = await get_questions_with_cache(quiz_code)
+                            next_question = (
+                                questions[next_q] if next_q < len(questions) else None
                             )
-                            # Remove from in-memory participants
-                            if quiz_code in manager.room_state:
-                                participants = manager.room_state[quiz_code].get("participants", {})
-                                participants.pop(kick_id, None)
+                            next_time_limit = int(
+                                next_question.get("timeLimit", next_question.get("time_limit", 30))
+                            ) if next_question else 30
 
-                            # ENHANCED: Enhancement 8 — send you_were_kicked to player before closing
-                            if kick_id in manager.user_sockets:
-                                kick_ws = manager.user_sockets[kick_id]
-                                try:
-                                    await kick_ws.send_json({
-                                        "type": "you_were_kicked",
-                                        "reason": kick_reason,
-                                    })
-                                except Exception:
-                                    pass
+                            # Set question WITH time_limit
+                            manager.set_question(quiz_code, next_q, next_time_limit)
+                            manager.clear_answers(quiz_code)
+                            manager.set_state(quiz_code, QuizState.QUESTION)
 
-                            # Broadcast kick event to all clients (with reason)
+                            question_start_time = manager.get_question_start_time(
+                                quiz_code
+                            )
+                            server_time = int(time.time() * 1000)
+
+                            # Strip correctAnswer for the broadcast
+                            safe_question = {
+                                k: v for k, v in next_question.items()
+                                if k != "correctAnswer"
+                            } if next_question else None
+
                             await manager.broadcast(
                                 quiz_code,
                                 {
-                                    "type": "participant_kicked",
-                                    "participantId": kick_id,
-                                    "name": kicked.get("name", "Unknown"),
-                                    "reason": kick_reason,  # ENHANCED: Enhancement 8
+                                    "type": "next_question",
+                                    "quiz_state": QuizState.QUESTION,
+                                    "current_question": next_q,
+                                    "question_number": next_q + 1,
+                                    "total_questions": total_q,
+                                    "question": safe_question,
+                                    "time_limit": next_time_limit,
+                                    "server_time": server_time,
+                                    "question_start_time": question_start_time,
                                 },
                                 priority=True,
                             )
-
-                            # Close the kicked player's WebSocket
-                            if kick_id in manager.user_sockets:
-                                kick_ws = manager.user_sockets[kick_id]
-                                try:
-                                    await kick_ws.close(
-                                        code=4001, reason=kick_reason or "Kicked by admin"
-                                    )
-                                except Exception:
-                                    pass
-
-                            logger.info(
-                                f"✓ Kicked player {kicked.get('name')} from {quiz_code} (reason: {kick_reason})"
+                            # PATCH-4: Store time warning task ref to prevent GC
+                            tw_key = f"{quiz_code}:{next_q}"
+                            manager._time_warning_tasks[tw_key] = asyncio.create_task(
+                                _time_warning_task(quiz_code, next_q, next_time_limit, manager)
                             )
+                            # PATCH-6: Spawn auto-advance task
+                            auto_key = f"{quiz_code}:auto:{next_q}"
+                            manager._time_warning_tasks[auto_key] = asyncio.create_task(
+                                _auto_advance_task(quiz_code, next_q, next_time_limit, manager)
+                            )
+                            logger.info(
+                                f"✓ Next question {next_q}: {quiz_code} limit={next_time_limit}s @ {question_start_time}"
+                            )
+                        else:
+                            # ENHANCED: Enhancement 5 — podium with full stats
+                            manager.set_state(quiz_code, QuizState.PODIUM)
+                            leaderboard = await calc_leaderboard(quiz_code)
+                            total_participants = len(leaderboard)
+                            winners = []
+                            for entry in leaderboard[:3]:
+                                # Fetch participant to compute accuracy and longest streak
+                                part = await db.participants.find_one(
+                                    {"id": entry.get("participantId"), "quizCode": quiz_code},
+                                    {"_id": 0}
+                                )
+                                answers = part.get("answers", []) if part else []
+                                correct_count = sum(1 for a in answers if a.get("isCorrect"))
+                                total_answered = len(answers)
+                                accuracy = round((correct_count / total_answered * 100) if total_answered else 0, 1)
+                                # Compute longest streak of consecutive correct answers
+                                longest_streak = 0
+                                current_s = 0
+                                for a in answers:
+                                    if a.get("isCorrect"):
+                                        current_s += 1
+                                        if current_s > longest_streak:
+                                            longest_streak = current_s
+                                    else:
+                                        current_s = 0
+                                winners.append({
+                                    **entry,
+                                    "correctAnswers": correct_count,
+                                    "accuracy": accuracy,
+                                    "longestStreak": longest_streak,
+                                })
+                            await manager.broadcast(
+                                quiz_code,
+                                {
+                                    "type": "show_podium",
+                                    "quiz_state": QuizState.PODIUM,
+                                    "winners": winners,
+                                    "totalParticipants": total_participants,
+                                    "server_time": int(time.time() * 1000),
+                                },
+                                priority=True,
+                            )
+                            logger.info(f"✓ Showing podium: {quiz_code} (top {len(winners)} winners)")
+
+                elif msg_type == "ping":
+                    await websocket.send_json(
+                        {
+                            "type": "pong",
+                            "t": int(time.time() * 1000),
+                            "clientTime": msg.get("clientTime") or msg.get("t"),
+                            "serverTime": int(time.time() * 1000)
+                        }
+                    )
+                elif msg_type == "pong":
+                    # FIX 12: Per-room pong tracking
+                    if user_id:
+                        if quiz_code not in manager._last_pong:
+                            manager._last_pong[quiz_code] = {}
+                        manager._last_pong[quiz_code][user_id] = time.time()
+
+                elif msg_type == "reaction":
+                    allowed = ["🔥", "😱", "👏", "💪", "🤔", "😂", "🎉", "⚡"]
+                    emoji = msg.get("emoji", "")
+                    if emoji in allowed and user_id and not is_admin:
+                        # Rate limit: max 1 reaction per 2 seconds per user
+                        now = time.time()
+                        last_reaction = manager.room_state.get(quiz_code, {}).get("last_reaction", {}).get(user_id, 0)
+                        if now - last_reaction >= 2.0:
+                            if quiz_code in manager.room_state:
+                                if "last_reaction" not in manager.room_state[quiz_code]:
+                                    manager.room_state[quiz_code]["last_reaction"] = {}
+                                manager.room_state[quiz_code]["last_reaction"][user_id] = now
+
+                            await manager.broadcast(quiz_code, {
+                                "type": "reaction",
+                                "emoji": emoji,
+                                "userId": user_id[:8],
+                            })
+
+                elif msg_type == "kick_player":
+                    if is_admin:
+                        kick_id = msg.get("participantId")
+                        kick_reason = msg.get("reason") or "Removed by host"  # ENHANCED: Enhancement 8
+                        if kick_id:
+                            # Remove from DB
+                            kicked = await db.participants.find_one_and_delete(
+                                {"id": kick_id, "quizCode": quiz_code},
+                                {"_id": 0, "name": 1, "id": 1},
+                            )
+                            if kicked:
+                                # PATCH-13: participantCount decrement is correctly inside
+                                # the `if kicked:` block — only decrements if document existed
+                                await db.quizzes.update_one(
+                                    {"code": quiz_code},
+                                    {"$inc": {"participantCount": -1}},
+                                )
+                                # Remove from in-memory participants
+                                if quiz_code in manager.room_state:
+                                    participants = manager.room_state[quiz_code].get("participants", {})
+                                    participants.pop(kick_id, None)
+
+                                # ENHANCED: Enhancement 8 — send you_were_kicked to player before closing
+                                if kick_id in manager.user_sockets:
+                                    kick_ws = manager.user_sockets[kick_id]
+                                    try:
+                                        await kick_ws.send_json({
+                                            "type": "you_were_kicked",
+                                            "reason": kick_reason,
+                                        })
+                                    except Exception:
+                                        pass
+
+                                # Broadcast kick event to all clients (with reason)
+                                await manager.broadcast(
+                                    quiz_code,
+                                    {
+                                        "type": "participant_kicked",
+                                        "participantId": kick_id,
+                                        "name": kicked.get("name", "Unknown"),
+                                        "reason": kick_reason,  # ENHANCED: Enhancement 8
+                                    },
+                                    priority=True,
+                                )
+
+                                # Close the kicked player's WebSocket
+                                if kick_id in manager.user_sockets:
+                                    kick_ws = manager.user_sockets[kick_id]
+                                    try:
+                                        await kick_ws.close(
+                                            code=4001, reason=kick_reason or "Kicked by admin"
+                                        )
+                                    except Exception:
+                                        pass
+
+                                logger.info(
+                                    f"✓ Kicked player {kicked.get('name')} from {quiz_code} (reason: {kick_reason})"
+                                )
+
+            except Exception as e:
+                # PATCH-12: Graceful error handling — log and notify client, don't break
+                logger.error(f"WS message handler error ({quiz_code}/{msg_type}): {e}", exc_info=True)
+                try:
+                    await websocket.send_json({
+                        "type": "server_error",
+                        "message": "An error occurred, please reconnect",
+                    })
+                except Exception:
+                    pass  # Socket might be dead
+                continue  # PATCH-12: Do NOT break — recoverable errors
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {quiz_code}")
