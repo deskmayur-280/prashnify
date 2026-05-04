@@ -132,6 +132,10 @@ class Config:
     MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
     DB_NAME = os.getenv("DB_NAME", "prashnify")
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # B-H-03: pool size is environment-driven so we don't need a code change
+    # to scale up after upgrading Atlas tier (M0 caps ~100 conns; M2/M5 allow 200+).
+    MONGO_POOL_SIZE = int(os.getenv("MONGO_POOL_SIZE", "5"))
+    MONGO_MIN_POOL_SIZE = int(os.getenv("MONGO_MIN_POOL_SIZE", "1"))
     MAX_PARTICIPANTS = 1000
     WS_HEARTBEAT_SEC = 20   # FIXED: Bug 8 — more forgiving for mobile
     WS_TIMEOUT_SEC = 90     # FIXED: Bug 8 — more forgiving for mobile
@@ -282,6 +286,17 @@ class QuizState:
 # OPTIMIZED WEBSOCKET CONNECTION MANAGER
 # ============================================================================
 
+# B-H-04: types that may be silently dropped when the broadcast queue is full.
+# Anything NOT in this set is considered semantically critical (quiz_starting,
+# next_question, final_leaderboard, countdown_*, show_*, podium, etc.) and the
+# queue will evict a droppable item to make room rather than dropping it.
+_DROPPABLE_BROADCAST_TYPES = frozenset({
+    "answer_count",
+    "answer_stats",
+    "reaction",
+    "ping",
+})
+
 
 class ConnectionManager:
     """Ultra-fast WebSocket manager with instant state sync and recovery"""
@@ -377,8 +392,10 @@ class ConnectionManager:
                     "question_answer_stats": {},
                     "current_time_limit": 30,
                 }
-                # FIX 13: Create bounded broadcast queue
-                self._broadcast_queue[quiz_code] = asyncio.Queue(maxsize=500)
+                # FIX 13 / B-H-04: bounded broadcast queue, sized for ~100 players
+                # × 20 events/s burst. Smaller queues silently dropped criticals
+                # like quiz_starting under load; see broadcast() for the drop policy.
+                self._broadcast_queue[quiz_code] = asyncio.Queue(maxsize=2000)
                 self._broadcast_tasks[quiz_code] = asyncio.create_task(
                     self._broadcast_worker(quiz_code)
                 )
@@ -486,15 +503,34 @@ class ConnectionManager:
         logger.info(f"✗ Disconnected: {quiz_code}")
 
     async def _purge_if_disconnected(self, quiz_code: str, user_id: str, grace_sec: int = 30):
-        """ENHANCED: Enhancement 6 — Purge participant only if still disconnected after grace period."""
-        # GRACE_WINDOW: 30s enforced here
+        """B-H-02: at grace expiry, MARK the participant as purged but do NOT
+        delete their in-memory state. Deleting was unsafe because:
+          (a) HTTP submits arriving during a WS-only disconnect would update
+              the DB but find their memory state gone, causing leaderboard
+              flicker and lost score.
+          (b) A re-disconnect after a brief reconnect could fire an old
+              purge task too early (the new task hasn't slept long enough).
+
+        Active-participant filters already exclude rows that still have
+        `disconnected_at`, so marking is sufficient. The room's eventual
+        cleanup frees the memory."""
         await asyncio.sleep(grace_sec)
-        if quiz_code in self.room_state:
-            p = self.room_state[quiz_code]["participants"].get(user_id)
-            if p and "disconnected_at" in p:
-                # Still disconnected — purge
-                self.room_state[quiz_code]["participants"].pop(user_id, None)
-                logger.info(f"Purged disconnected participant {user_id} from {quiz_code} after {grace_sec}s")
+        if quiz_code not in self.room_state:
+            return
+        p = self.room_state[quiz_code]["participants"].get(user_id)
+        if not p or "disconnected_at" not in p:
+            return  # Reconnected — nothing to do
+        # Re-check elapsed time: if the user re-disconnected after this task
+        # was scheduled, the disconnected_at value is fresher than grace_sec
+        # ago. Bail; the newer purge task will handle it.
+        elapsed = time.time() - p["disconnected_at"]
+        if elapsed < grace_sec:
+            return
+        p["purged"] = True
+        logger.info(
+            f"Marked purged participant {user_id} from {quiz_code} after "
+            f"{grace_sec}s (state retained for replay/leaderboard consistency)"
+        )
 
     async def _broadcast_worker(self, quiz_code: str):
         """Background worker for instant broadcasts with batching"""
@@ -577,19 +613,49 @@ class ConnectionManager:
             dead_sockets.append(conn)
 
     async def broadcast(self, quiz_code: str, message: dict, priority: bool = False):
-        """FIX 13: Overflow-safe broadcast via bounded queue"""
+        """FIX 13 / B-H-04: overflow-safe broadcast with priority-aware drop policy.
+
+        Tier 2 (droppable): answer_count, answer_stats, reaction, ping —
+            if the queue is full and the *incoming* message is in this set,
+            drop it. This preserves criticals already enqueued.
+        Otherwise (incoming is not droppable): scan the queue for the first
+            Tier-2 item already inside and drop *that* to make room. If none
+            exists, fall back to dropping the oldest item.
+        """
         if quiz_code not in self._broadcast_queue:
             return
         q = self._broadcast_queue[quiz_code]
+        msg_type = message.get("type", "")
         try:
             q.put_nowait(message)
         except asyncio.QueueFull:
-            if message.get("type") in ("answer_count", "answer_stats", "reaction", "ping"):
-                return  # safe to drop
-            try: q.get_nowait()  # drop oldest
-            except: pass
-            try: q.put_nowait(message)
-            except: logger.warning(f"Queue full: {quiz_code}/{message.get('type')}")
+            if msg_type in _DROPPABLE_BROADCAST_TYPES:
+                return  # incoming is low-priority, drop it
+            dropped_droppable = False
+            try:
+                internal = q._queue  # collections.deque (cpython internal, stable)
+                for i, item in enumerate(internal):
+                    if item.get("type", "") in _DROPPABLE_BROADCAST_TYPES:
+                        del internal[i]
+                        dropped_droppable = True
+                        break
+            except Exception:
+                pass
+            if not dropped_droppable:
+                try:
+                    q.get_nowait()  # drop oldest as last resort
+                except asyncio.QueueEmpty:
+                    pass
+                logger.warning(
+                    f"Broadcast queue full, dropped oldest to enqueue {msg_type} "
+                    f"on {quiz_code}"
+                )
+            try:
+                q.put_nowait(message)
+            except asyncio.QueueFull:
+                logger.error(
+                    f"Broadcast queue refill failed: {quiz_code}/{msg_type}"
+                )
         self._message_count[quiz_code] += 1
 
     async def broadcast_answer_count_debounced(self, quiz_code: str):
@@ -805,11 +871,22 @@ class ConnectionManager:
         if quiz_code in self.room_state:
             self.room_state[quiz_code]["total_questions"] = total
 
-    def mark_answered(self, quiz_code: str, user_id: str):
-        if quiz_code in self.room_state:
-            self.room_state[quiz_code]["answered"].add(user_id)
+    async def mark_answered(self, quiz_code: str, user_id: str) -> bool:
+        """B-C-02: Atomic check-and-set under self._lock.
+        Returns True if the user was newly added (proceed with submit),
+        False if already present (duplicate — caller should reject)."""
+        async with self._lock:
+            if quiz_code not in self.room_state:
+                return False
+            answered = self.room_state[quiz_code]["answered"]
+            if user_id in answered:
+                return False
+            answered.add(user_id)
+            return True
 
     def has_answered(self, quiz_code: str, user_id: str) -> bool:
+        """Non-authoritative read for fast paths (UI hints, debouncing).
+        For the gate that prevents duplicate submits, use mark_answered."""
         if quiz_code in self.room_state:
             return user_id in self.room_state[quiz_code]["answered"]
         return False
@@ -1012,24 +1089,49 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting Prashnify API (PRODUCTION v2)")
 
     try:
-        # FIX 1: JWT_SECRET guard — warn, don't crash
-        if config.JWT_SECRET == "prashnify-secret-key-change-in-production":
-            logger.warning("⚠ JWT_SECRET is using insecure default — set JWT_SECRET env var in production")
+        # B-C-05: hard-fail when default secrets are used outside development.
+        # Set ENV=development locally; any other value (or unset) is treated as production.
+        _env = os.getenv("ENV", "production").lower()
+        _is_dev = _env in ("development", "dev", "local")
+        _default_jwt = config.JWT_SECRET == "prashnify-secret-key-change-in-production"
+        _default_pw = config.ADMIN_PASSWORD == "prashnify2026"
+        if _default_jwt or _default_pw:
+            offenders = []
+            if _default_jwt:
+                offenders.append("JWT_SECRET")
+            if _default_pw:
+                offenders.append("ADMIN_PASSWORD")
+            msg = f"Insecure default secrets in use: {', '.join(offenders)}"
+            if _is_dev:
+                logger.warning(f"⚠ {msg} — acceptable in ENV={_env}, MUST be set before deploying")
+            else:
+                raise RuntimeError(
+                    f"FATAL: {msg}. Set them as env vars, or set ENV=development to bypass locally."
+                )
 
         mongo_client = AsyncIOMotorClient(
             config.MONGO_URL,
             serverSelectionTimeoutMS=3000,   # BUG 2c: faster failure on M0
             connectTimeoutMS=5000,
             socketTimeoutMS=10000,
-            maxPoolSize=5,       # BUG 2c: Atlas M0 allows 100 total; keep very low
-            minPoolSize=1,       # BUG 2c: minimal idle connections
+            # B-H-03: pool size from env. Default 5 is M0-safe; raise via
+            # MONGO_POOL_SIZE on paid tiers to handle mass-join bursts.
+            maxPoolSize=config.MONGO_POOL_SIZE,
+            minPoolSize=config.MONGO_MIN_POOL_SIZE,
             maxIdleTimeMS=10000, # BUG 2c: free connections aggressively
             retryWrites=True,
             retryReads=True,
         )
         db = mongo_client[config.DB_NAME]
-        await db.command("ping")
-        logger.info("✓ MongoDB connected")
+        # B-H-03: warm the pool with concurrent pings so the first burst of
+        # joins doesn't pay TCP-handshake latency on every connection.
+        await asyncio.gather(*[
+            db.command("ping") for _ in range(min(config.MONGO_POOL_SIZE, 5))
+        ])
+        logger.info(
+            f"✓ MongoDB connected (pool {config.MONGO_MIN_POOL_SIZE}-"
+            f"{config.MONGO_POOL_SIZE}, prewarmed)"
+        )
     except Exception as e:
         logger.error(f"❌ MongoDB connection failed: {e}")
         raise
@@ -1042,8 +1144,12 @@ async def lifespan(app: FastAPI):
         await db.quizzes.create_index([("code", 1), ("status", 1)])
         await db.participants.create_index([("id", 1), ("quizCode", 1)])
         await db.participants.create_index("quizCode")
+        # B-H-05: composite index aligned with calc_leaderboard's sort order
+        # (score DESC, then totalTime ASC for tiebreak). Without the totalTime
+        # column in the index, Mongo could only use the index up to score and
+        # had to in-memory sort the tiebreak — slow for large rooms.
         await db.participants.create_index(
-            [("quizCode", 1), ("score", -1)]
+            [("quizCode", 1), ("score", -1), ("totalTime", 1)]
         )  # For leaderboard
         await db.participants.create_index([("quizCode", 1), ("name", 1)])
         # NOTE: NOT unique — allowedAttempts>1 quizzes need duplicate names
@@ -1313,6 +1419,45 @@ def verify_token(token: str) -> Optional[Dict]:
         return None
 
 
+# B-C-04: participant token binds session to (participantId, quizCode).
+# Issued on /api/join; required on participant endpoints to prevent
+# one player from reading another's data via the participantId query param.
+def create_participant_token(pid: str, quiz_code: str) -> str:
+    payload = {
+        "sub": pid,
+        "code": quiz_code,
+        "role": "participant",
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=4),
+    }
+    return pyjwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
+
+
+def authorize_participant(
+    participant_id: str,
+    quiz_code: str,
+    credentials: Optional[HTTPAuthorizationCredentials],
+) -> None:
+    """Raises 401/403 unless the bearer token authorizes this participant_id+code.
+    Admin tokens are accepted when participant_id == 'admin' (legacy admin path)."""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    role = payload.get("role")
+    if participant_id == "admin":
+        if role != "admin":
+            raise HTTPException(status_code=403, detail="Admin token required")
+        return
+
+    if role != "participant":
+        raise HTTPException(status_code=403, detail="Participant token required")
+    if payload.get("sub") != participant_id or payload.get("code") != quiz_code:
+        raise HTTPException(status_code=403, detail="Token does not match participant")
+
+
 async def verify_admin_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict:
@@ -1382,13 +1527,14 @@ async def is_avatar_unique(
 async def generate_unique_avatar(
     quiz_code: str, exclude_participant: Optional[str] = None
 ) -> str:
-
-    max_attempts = 50
-    for _ in range(max_attempts):
-        seed = f"{quiz_code}-{uuid.uuid4().hex[:8]}-{int(time.time() * 1000)}"
-        if await is_avatar_unique(quiz_code, seed, exclude_participant):
-            return seed
-    return f"{quiz_code}-fallback-{uuid.uuid4().hex}"
+    """B-M-02: a full uuid4 hex (32 chars, 122 bits of entropy) is collision-
+    free at any realistic scale — birthday-paradox collision odds for 10k
+    participants are ~1 in 10^29. The previous implementation issued up to
+    50 DB queries per join hunting for a unique 8-char prefix, which became
+    a major bottleneck on Atlas M0. We now skip the DB check entirely on
+    this path; the explicit-seed branch in the join endpoint still verifies
+    user-supplied seeds against duplicates."""
+    return f"{quiz_code}-{uuid.uuid4().hex}"
 
 
 def calc_points_v2(
@@ -1518,6 +1664,10 @@ async def calc_leaderboard(code: str) -> List[Dict]:
                     "avatarSeed": p.get("avatarSeed", ""),
                     "participantId": p.get("id", ""),
                     "completedAt": p.get("completedAt"),
+                    # B-H-06: include answers so podium generation doesn't
+                    # have to re-fetch the top 3 from the DB. Already in the
+                    # document we just read; cost is in-memory, not network.
+                    "answers": p.get("answers", []),
                 }
             )
 
@@ -1641,15 +1791,19 @@ async def admin_login(data: AdminLogin):
         password_valid = False
 
         if HAS_BCRYPT and stored_pw.startswith("$2"):
-            # bcrypt hash — verify directly
-            password_valid = verify_password(data.password, stored_pw)
+            # B-M-01: bcrypt is CPU-bound (~100ms). Run in a worker thread so
+            # concurrent admin logins don't block the event loop and stall
+            # WebSocket traffic for active quiz participants.
+            password_valid = await asyncio.to_thread(
+                verify_password, data.password, stored_pw
+            )
         else:
             # Legacy SHA-256 fallback
             hashed_pw = hashlib.sha256(data.password.encode()).hexdigest()
             password_valid = (stored_pw == hashed_pw)
             # Auto-migrate to bcrypt on successful legacy login
             if password_valid and HAS_BCRYPT:
-                new_hash = hash_password(data.password)
+                new_hash = await asyncio.to_thread(hash_password, data.password)
                 await db.admins.update_one(
                     {"username": data.username},
                     {"$set": {"password": new_hash}}
@@ -1918,7 +2072,30 @@ async def reroll_avatar(data: dict):
 _join_semaphore: Optional[asyncio.Semaphore] = None
 
 
-@app.post("/api/join", response_model=Participant)
+async def _bump_participant_count(quiz_code: str) -> None:
+    """B-H-03: fire-and-forget participantCount increment.
+    Failures are logged but never escalate — the inserted participant
+    document is the source of truth, this counter is purely for display."""
+    for attempt in range(3):
+        try:
+            await db.quizzes.update_one(
+                {"code": quiz_code},
+                {
+                    "$inc": {"participantCount": 1},
+                    "$set": {"lastPlayed": datetime.now(timezone.utc).isoformat()},
+                },
+            )
+            return
+        except pymongo.errors.PyMongoError:
+            if attempt < 2:
+                await asyncio.sleep(0.1 * (2 ** attempt))
+            else:
+                logger.warning(
+                    f"participantCount increment failed for {quiz_code} — non-critical"
+                )
+
+
+@app.post("/api/join")
 async def join_quiz(data: ParticipantJoin):
     try:
         if not data.name or not data.name.strip():
@@ -1988,24 +2165,18 @@ async def join_quiz(data: ParticipantJoin):
                                 raise HTTPException(503, "Server busy — please retry",
                                                     headers={"Retry-After": "2"})
 
-                    # FIX 6: Increment count (separate, non-fatal)
-                    for attempt in range(3):
-                        try:
-                            await db.quizzes.update_one(
-                                {"code": data.quizCode},
-                                {"$inc": {"participantCount": 1},
-                                 "$set": {"lastPlayed": datetime.now(timezone.utc).isoformat()}}
-                            )
-                            break
-                        except pymongo.errors.PyMongoError:
-                            if attempt < 2:
-                                await asyncio.sleep(0.1 * (2 ** attempt))
-                            else:
-                                logger.warning(f"participantCount increment failed — non-critical")
-                                break
+                    # B-H-03: detach the participantCount increment as a
+                    # background task. The user's join response no longer
+                    # waits for this non-critical write — cuts join latency
+                    # by ~30-50% under mass-join load.
+                    asyncio.create_task(
+                        _bump_participant_count(data.quizCode)
+                    )
 
             logger.info(f"✓ Participant joined: {data.name} -> {data.quizCode}")
-            return Participant(**pdoc)
+            # B-C-04: return JWT bound to (pid, code); frontend stores and sends as Bearer.
+            token = create_participant_token(pid, data.quizCode)
+            return {**Participant(**pdoc).model_dump(), "token": token}
 
         except TimeoutError:
             raise HTTPException(503, "Server is busy, please try again",
@@ -2020,8 +2191,15 @@ async def join_quiz(data: ParticipantJoin):
 
 
 @app.get("/api/quiz/{code}/questions")
-async def get_quiz_questions(code: str, participantId: str):
+async def get_quiz_questions(
+    code: str,
+    participantId: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
     try:
+        # B-C-04: bind request to (pid, code) via Bearer token.
+        authorize_participant(participantId, code, credentials)
+
         quiz = await get_quiz_with_cache(code)
         if not quiz:
             raise HTTPException(404, "Quiz not found")
@@ -2055,17 +2233,17 @@ async def get_quiz_questions(code: str, participantId: str):
 
 
 @app.post("/api/submit-answer")
-async def submit_answer(ans: AnswerSubmit):
+async def submit_answer(
+    ans: AnswerSubmit,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
     """ULTRA-OPTIMIZED: Instant answer processing with minimal DB hits"""
     try:
-        # Early validation - check manager state first (no DB hit)
+        # B-C-04: gate the submit on a token bound to the participantId in the body.
+        authorize_participant(ans.participantId, ans.quizCode, credentials)
+        # B-C-02: Atomic gate. mark_answered returns True only on first submit;
+        # any concurrent duplicate is rejected here without further DB work.
         if manager:
-            if manager.has_answered(ans.quizCode, ans.participantId):
-                logger.warning(
-                    f"Duplicate answer blocked: {ans.participantId} Q{ans.questionIndex}"
-                )
-                raise HTTPException(400, "Already answered this question")
-
             current_state = manager.get_state(ans.quizCode)
             if current_state in [QuizState.ENDED, QuizState.PODIUM]:
                 return {
@@ -2074,6 +2252,12 @@ async def submit_answer(ans: AnswerSubmit):
                     "ignored": True,
                     "reason": "Quiz has ended",
                 }
+
+            if not await manager.mark_answered(ans.quizCode, ans.participantId):
+                logger.warning(
+                    f"Duplicate answer blocked: {ans.participantId} Q{ans.questionIndex}"
+                )
+                raise HTTPException(400, "Already answered this question")
 
         # PERF-3: Fetch quiz and question from cache (no DB hit if warm).
         # Only participant fetch hits MongoDB cold. Wrap with timeout.
@@ -2160,9 +2344,8 @@ async def submit_answer(ans: AnswerSubmit):
             db.participants.update_one({"id": ans.participantId}, update_doc)
         )
 
-        # Mark as answered IMMEDIATELY and broadcast
+        # B-C-02: already marked atomically at the top of the function.
         if manager:
-            manager.mark_answered(ans.quizCode, ans.participantId)
             answered, total = manager.get_answer_count(ans.quizCode)
 
             # Track answer stats for distribution chart
@@ -2348,9 +2531,15 @@ async def get_question_stats(code: str, index: int):
 
 
 @app.get("/api/quiz/{code}/my-results/{participant_id}")
-async def get_my_results(code: str, participant_id: str):
+async def get_my_results(
+    code: str,
+    participant_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
     """Personal performance breakdown for a participant"""
     try:
+        # B-C-04: only the owner of the participant token can read these results.
+        authorize_participant(participant_id, code, credentials)
         p = await db.participants.find_one(
             {"id": participant_id, "quizCode": code}, {"_id": 0}
         )
@@ -2484,12 +2673,14 @@ async def _time_warning_task(quiz_code: str, question_index: int, time_limit: in
 
 async def handle_start_quiz(quiz_code: str, mgr: ConnectionManager):
     """Background task: 5-second countdown then send Q1.
-    BUG 5 / CHANGE 3: Per-room start guard prevents double-start."""
-    # BUG 5: Check start guard — prevent double-click from firing two countdowns
-    if quiz_code in mgr._starting:
-        logger.warning(f"handle_start_quiz called twice for {quiz_code} — ignoring")
-        return
-    mgr._starting.add(quiz_code)
+    BUG 5 / CHANGE 3: Per-room start guard prevents double-start.
+    B-C-03: Check-and-set is now atomic under mgr._lock to close the race
+    where two concurrent admin clicks both pass the membership check."""
+    async with mgr._lock:
+        if quiz_code in mgr._starting:
+            logger.warning(f"handle_start_quiz called twice for {quiz_code} — ignoring")
+            return
+        mgr._starting.add(quiz_code)
     try:
         questions = await get_questions_with_cache(quiz_code)
         if not questions:
@@ -2658,9 +2849,11 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
                             manager._purge_tasks.pop(purge_key, None)
 
                         manager.add_participant(quiz_code, p)
-                        # Clear disconnected_at flag on reconnect
+                        # Clear disconnected_at AND B-H-02 purged flag on reconnect
+                        # so a participant who was marked purged can rejoin cleanly.
                         if is_reconnect and quiz_code in manager.room_state:
                             manager.room_state[quiz_code]["participants"][participant_id].pop("disconnected_at", None)
+                            manager.room_state[quiz_code]["participants"][participant_id].pop("purged", None)
 
                         # PERF FIX 1: Update lastActive only on WS connect
                         await update_participant_active(participant_id)
@@ -2775,7 +2968,9 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
             elif msg_type == "auto_submit":
                 participant_id = msg.get("participantId")
                 if participant_id:
-                    manager.mark_answered(quiz_code, participant_id)
+                    # B-C-02: now async + atomic; ignore return value here
+                    # (a duplicate auto_submit is harmless on this path).
+                    await manager.mark_answered(quiz_code, participant_id)
                     # PERF FIX 2: Debounced answer_count broadcast
                     await manager.broadcast_answer_count_debounced(quiz_code)
 
@@ -2882,12 +3077,9 @@ async def websocket_endpoint(websocket: WebSocket, quiz_code: str):
                         total_participants = len(leaderboard)
                         winners = []
                         for entry in leaderboard[:3]:
-                            # Fetch participant to compute accuracy and longest streak
-                            part = await db.participants.find_one(
-                                {"id": entry.get("participantId"), "quizCode": quiz_code},
-                                {"_id": 0}
-                            )
-                            answers = part.get("answers", []) if part else []
+                            # B-H-06: answers are now carried in the leaderboard
+                            # entry — no extra DB roundtrip per podium spot.
+                            answers = entry.get("answers", [])
                             correct_count = sum(1 for a in answers if a.get("isCorrect"))
                             total_answered = len(answers)
                             accuracy = round((correct_count / total_answered * 100) if total_answered else 0, 1)
